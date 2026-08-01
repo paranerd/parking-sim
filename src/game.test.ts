@@ -2,8 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   adjustHourlyPrice,
   advanceTime,
+  arrivalChance,
   buyUpgrade,
   calculateOfflineProgress,
+  demandFactor,
+  demandLevel,
+  expectedOccupancyRate,
   incomePerMinute,
   incomePerSecond,
   INITIAL_STATE,
@@ -11,6 +15,8 @@ import {
   MINUTES_PER_SECOND,
   performMaintenance,
   PRICE_STEP,
+  priceDemandFactor,
+  REFERENCE_PRICE,
   repairIncident,
   setHourlyPrice,
   simulateTick,
@@ -110,12 +116,10 @@ describe('parking simulation', () => {
     expect(adjustHourlyPrice(lowered, -1)).toBe(lowered);
   });
 
-  it('keeps a single chronicle entry while stepping the price', () => {
+  it('adds up repeated price steps without drifting', () => {
     const state = freshState();
     const stepped = adjustHourlyPrice(adjustHourlyPrice(adjustHourlyPrice(state, 1), 1), 1);
-    expect(stepped.log.filter((entry) => entry.startsWith('Der Stundenpreis'))).toHaveLength(1);
-    expect(stepped.log[0]).toContain('2,80');
-    expect(stepped.log).toHaveLength(state.log.length + 1);
+    expect(stepped.price).toBe(2.8);
   });
 
   it('reports the revenue earned by one real-time second as profit per second', () => {
@@ -175,6 +179,63 @@ describe('parking simulation', () => {
     const random = vi.fn().mockReturnValue(0);
     const next = simulateTick(state, random);
     expect(next.activeIncident).not.toBeNull();
-    expect(next.log[0]).toContain('kümmere dich');
+    expect(next.activeIncident?.repairCost).toBeGreaterThan(0);
+  });
+
+  it('does not carry a chronicle log any more', () => {
+    const state = simulateTick(buyUpgrade({ ...freshState(), cash: 500 }, 'spaces'), () => 0);
+    expect(state).not.toHaveProperty('log');
+  });
+});
+
+describe('price and demand', () => {
+  it('lowers demand for every price increase', () => {
+    const state = freshState();
+    const cheaper = { ...state, price: 1.5 };
+    const dearer = { ...state, price: 5 };
+    const steep = { ...state, price: 10 };
+    expect(demandFactor(dearer)).toBeLessThan(demandFactor(state));
+    expect(demandFactor(steep)).toBeLessThan(demandFactor(dearer));
+    expect(demandFactor(cheaper)).toBeGreaterThan(demandFactor(state));
+  });
+
+  it('reacts progressively: doubling the price costs more than half the demand', () => {
+    expect(priceDemandFactor(REFERENCE_PRICE)).toBe(1);
+    expect(priceDemandFactor(REFERENCE_PRICE * 2)).toBeLessThan(0.5);
+    expect(priceDemandFactor(1000)).toBeGreaterThan(0);
+    expect(priceDemandFactor(0)).toBeLessThanOrEqual(1.8);
+  });
+
+  it('translates a higher price into fewer arrivals and lower occupancy', () => {
+    const state = freshState();
+    const dearer = { ...state, price: 8 };
+    expect(arrivalChance(dearer)).toBeLessThan(arrivalChance(state));
+    expect(expectedOccupancyRate(dearer)).toBeLessThan(expectedOccupancyRate(state));
+  });
+
+  it('has a profit optimum instead of rewarding endless price hikes', () => {
+    const state = freshState();
+    const revenueAt = (price: number): number => {
+      const priced = { ...state, price };
+      return expectedOccupancyRate(priced) * price;
+    };
+    expect(revenueAt(4)).toBeGreaterThan(revenueAt(2.5));
+    expect(revenueAt(4)).toBeGreaterThan(revenueAt(12));
+    expect(revenueAt(4)).toBeGreaterThan(revenueAt(1));
+  });
+
+  it('reports demand relative to a normal daytime hour', () => {
+    const state = { ...freshState(), minuteOfDay: 12 * 60 };
+    expect(demandLevel(state)).toBeCloseTo(1);
+    expect(demandLevel({ ...state, price: 6 })).toBeLessThan(1);
+    expect(demandLevel({ ...state, minuteOfDay: 2 * 60 })).toBeLessThan(1);
+  });
+
+  it('lets the price throttle offline income as well', () => {
+    const state = freshState();
+    state.lastSavedAt = 0;
+    const normal = calculateOfflineProgress(state, 60 * 60_000);
+    const dearer = calculateOfflineProgress({ ...state, price: 30 }, 60 * 60_000);
+    expect(dearer.earned).toBeLessThan(normal.earned);
   });
 });

@@ -3,11 +3,15 @@ import {
   adjustHourlyPrice,
   advanceTime,
   buyUpgrade,
+  demandLevel,
   GameState,
   incomePerSecond,
+  INITIAL_STATE,
   maintenanceCost,
   performMaintenance,
   PRICE_STEP,
+  priceDemandFactor,
+  REFERENCE_PRICE,
   repairIncident,
   simulateTick,
   UpgradeId,
@@ -24,9 +28,17 @@ let state = loaded.state;
 let selectedCategory: 'Alle' | 'Ausbau' | 'Service' | 'Automation' = 'Alle';
 let muted = false;
 let showOfflineModal = loaded.offlineEarned > 0.05;
+let askReset = false;
 
 const money = (value: number): string => `${value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 const profitPerSecond = (game: GameState): string => `+ ${money(incomePerSecond(game))}`;
+
+/** Explains how the chosen price pushes demand away from the reference tariff. */
+const demandHint = (game: GameState): string => {
+  const change = Math.round((priceDemandFactor(game.price) - 1) * 100);
+  if (change === 0) return `Tarif auf Normalniveau von ${money(REFERENCE_PRICE)}`;
+  return `${change > 0 ? '+' : ''}${change}% Andrang durch den Preis von ${money(game.price)}`;
+};
 const clock = (minutes: number): string => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
 const percent = (value: number): string => `${Math.round(value)}%`;
 
@@ -48,6 +60,7 @@ const focusedSelector = (): string | null => {
 const render = (): void => {
   const restoreFocus = focusedSelector();
   const occupancy = state.spaces ? state.occupied / state.spaces * 100 : 0;
+  const demand = demandLevel(state) * 100;
   const filtered = upgrades.filter((upgrade) => selectedCategory === 'Alle' || upgrade.category === selectedCategory);
   const buildProgress = Math.min(100, state.spaces / 50 * 100);
   const nextDeck = 50 - state.spaces;
@@ -62,7 +75,7 @@ const render = (): void => {
       </div>
       <div class="header-actions">
         <button class="icon-button" data-action="mute" aria-label="Ton ${muted ? 'einschalten' : 'ausschalten'}">${muted ? '╳' : '♫'}</button>
-        <button class="icon-button" data-action="reset" aria-label="Spielstand zurücksetzen">↻</button>
+        <button class="icon-button" data-action="ask-reset" aria-label="Spiel neu starten">↻</button>
         <div class="level-badge"><span>TAG</span><strong>${state.day}</strong></div>
       </div>
     </header>
@@ -94,6 +107,7 @@ const render = (): void => {
         <aside class="side-panel">
           <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
           <div class="metric"><div><span>Auslastung</span><strong>${Math.round(occupancy)}%</strong></div><div class="progress"><i style="width:${occupancy}%"></i></div><small>${state.occupied} von ${state.spaces} Plätzen belegt</small></div>
+          <div class="metric"><div><span>Nachfrage</span><strong data-live="demand">${percent(demand)}</strong></div><div class="progress ${demand < 60 ? 'amber' : ''}"><i data-live="demand-bar" style="width:${Math.min(100, demand)}%"></i></div><small data-live="demand-hint">${demandHint(state)}</small></div>
           <div class="quick-stats">
             <div class="price-setting">
               <span id="price-label">PREIS / STD.</span>
@@ -135,13 +149,15 @@ const render = (): void => {
         </div>
       </section>
 
-      <section class="activity">
-        <div><span class="eyebrow">PARKPLATZ-CHRONIK</span><h2>Was gerade passiert</h2></div>
-        <div class="log-list">${state.log.slice(0, 3).map((item, index) => `<p><i>${index === 0 ? '●' : '○'}</i>${item}<span>${index === 0 ? 'gerade eben' : 'vor kurzem'}</span></p>`).join('')}</div>
-      </section>
     </main>
-    <footer><div class="brand mini"><span class="brand-mark">P</span><strong>Parking <em>Empire</em></strong></div><p>Dein Parkplatz. Deine Regeln. Dein Imperium.</p><span>SPIELSTAND AUTOMATISCH GESPEICHERT</span></footer>
+    <footer>
+      <div class="brand mini"><span class="brand-mark">P</span><strong>Parking <em>Empire</em></strong></div>
+      <p>Dein Parkplatz. Deine Regeln. Dein Imperium.</p>
+      <button class="restart-button" data-action="ask-reset">Spiel neu starten</button>
+      <span>SPIELSTAND AUTOMATISCH GESPEICHERT</span>
+    </footer>
     ${showOfflineModal ? `<div class="modal-backdrop" id="offline-modal"><div class="modal"><span class="modal-icon">☀</span><span class="eyebrow">WILLKOMMEN ZURÜCK</span><h2>Dein Parkplatz war fleißig.</h2><p>Während deiner Abwesenheit von ${Math.round(loaded.offlineMinutes)} Minuten wurden Einnahmen erzielt.</p><strong>+ ${money(loaded.offlineEarned)}</strong><button data-action="close-modal">Weiterbauen</button></div></div>` : ''}
+    ${askReset ? `<div class="modal-backdrop" id="reset-modal"><div class="modal"><span class="modal-icon warn">↻</span><span class="eyebrow">NEU STARTEN</span><h2>Wirklich von vorn beginnen?</h2><p>Dein Spielstand von Tag ${state.day} mit ${state.spaces} ${state.spaces === 1 ? 'Stellplatz' : 'Stellplätzen'} und ${money(state.cash)} wird endgültig gelöscht.</p><div class="modal-actions"><button class="ghost" data-action="cancel-reset">Abbrechen</button><button data-action="confirm-reset">Ja, neu starten</button></div></div></div>` : ''}
   `;
 
   if (restoreFocus) app.querySelector<HTMLElement>(restoreFocus)?.focus();
@@ -164,12 +180,23 @@ app.addEventListener('click', (event) => {
     showOfflineModal = false;
     document.querySelector('#offline-modal')?.remove();
   }
-  if (target.dataset.action === 'reset' && window.confirm('Möchtest du wirklich neu anfangen?')) {
-    resetGame();
-    window.location.reload();
-  }
+  if (target.dataset.action === 'ask-reset') askReset = true;
+  if (target.dataset.action === 'cancel-reset') askReset = false;
+  if (target.dataset.action === 'confirm-reset') restartGame();
   if (target.dataset.action !== 'close-modal') render();
 });
+
+/** Wipes the save and starts a brand new parking lot without a page reload. */
+const restartGame = (): void => {
+  resetGame();
+  state = { ...structuredClone(INITIAL_STATE), lastSavedAt: Date.now() };
+  selectedCategory = 'Alle';
+  askReset = false;
+  showOfflineModal = false;
+  lastStep = performance.now();
+  pendingTicks = 0;
+  saveGame(state);
+};
 
 /** Refreshes the values that grow continuously, without rebuilding the DOM. */
 const renderLiveValues = (): void => {
@@ -179,6 +206,13 @@ const renderLiveValues = (): void => {
   if (clockNode) clockNode.textContent = clock(state.minuteOfDay);
   const rate = profitPerSecond(state);
   app.querySelectorAll<HTMLElement>('[data-live="rate"]').forEach((node) => { node.textContent = rate; });
+
+  // Demand drifts with the time of day, so it moves between the event ticks.
+  const demand = demandLevel(state) * 100;
+  const demandNode = app.querySelector<HTMLElement>('[data-live="demand"]');
+  if (demandNode) demandNode.textContent = percent(demand);
+  const demandBar = app.querySelector<HTMLElement>('[data-live="demand-bar"]');
+  if (demandBar) demandBar.style.width = `${Math.min(100, demand)}%`;
 };
 
 let lastStep = performance.now();

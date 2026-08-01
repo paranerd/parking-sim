@@ -19,7 +19,7 @@ button { color: inherit; }
 .level-badge { margin-left: 12px; width: 52px; height: 52px; border-radius: 50%; background: $lime; display: grid; place-content: center; text-align: center; line-height: 1; span { font: 500 8px 'DM Mono'; } strong { font-size: 18px; } }
 main { max-width: 1440px; margin: 0 auto; padding: 42px 28px 70px; }
 .hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) 345px; gap: 22px; }
-.parking-card, .side-panel, .upgrade-card, .activity { background: $cream; border: 1px solid $line; border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px rgba($ink, .03); }
+.parking-card, .side-panel, .upgrade-card { background: $cream; border: 1px solid $line; border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px rgba($ink, .03); }
 .scene-head { height: 101px; padding: 22px 27px; display: flex; justify-content: space-between; align-items: center; h1 { margin: 3px 0 1px; font-size: 25px; letter-spacing: -.04em; } p { color: #73817d; margin: 0; font-size: 12px; } }
 .eyebrow { color: $green; font: 500 9px 'DM Mono'; letter-spacing: .15em; }
 .weather { display: flex; gap: 10px; align-items: center; > span { color: $orange; font-size: 25px; } div { display: flex; flex-direction: column; } strong { font: 500 15px 'DM Mono'; } small { font-size: 10px; color: #77817f; } }
@@ -131,11 +131,11 @@ main { max-width: 1440px; margin: 0 auto; padding: 42px 28px 70px; }
 .upgrade-icon { width: 52px; height: 52px; display: grid; place-items: center; background: #e4eadc; color: $green; border-radius: 7px; font: 500 24px 'DM Mono'; }
 .upgrade-copy { > span { font: 500 8px 'DM Mono'; letter-spacing: .12em; color: #85908c; } h3 { font-size: 15px; margin: 5px 0 3px; } p { min-height: 30px; font-size: 10px; color: #7b8884; margin: 0 0 12px; } }
 .level-dots { display: flex; align-items: center; gap: 4px; i { display: block; width: 18px; height: 4px; background: #e2e2db; border-radius: 4px; &.filled { background: $green; } &.endless { opacity: .28; } } small { margin-left: auto; font: 500 8px 'DM Mono'; color: #8b9491; } }
-.activity { margin-top: 60px; padding: 26px; display: grid; grid-template-columns: 280px 1fr; h2 { margin: 4px 0; font-size: 22px; } }
-.log-list p { display: grid; grid-template-columns: 20px 1fr auto; margin: 0; padding: 10px; border-bottom: 1px solid $line; font-size: 11px; i { color: $green; } span { color: #89938f; font-size: 9px; } }
-footer { border-top: 1px solid $line; padding: 28px max(28px, calc((100vw - 1384px)/2)); display: flex; align-items: center; gap: 25px; color: #7f8b87; font-size: 10px; .mini { width: auto; strong { font-size: 12px; } .brand-mark { width: 25px; height: 25px; font-size: 14px; } } > span { margin-left: auto; font: 500 8px 'DM Mono'; letter-spacing: .1em; } }
+footer { border-top: 1px solid $line; padding: 28px max(28px, calc((100vw - 1384px)/2)); display: flex; align-items: center; gap: 25px; color: #7f8b87; font-size: 10px; .mini { width: auto; strong { font-size: 12px; } .brand-mark { width: 25px; height: 25px; font-size: 14px; } } > span { font: 500 8px 'DM Mono'; letter-spacing: .1em; } }
+.restart-button { margin-left: auto; border: 1px solid $line; background: transparent; border-radius: 6px; padding: 9px 16px; color: $ink; font-size: 10px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; &:hover { background: #b3413a; border-color: #b3413a; color: white; } }
 .modal-backdrop { position: fixed; inset: 0; background: rgba($ink,.68); z-index: 50; display: grid; place-items: center; padding: 20px; backdrop-filter: blur(4px); }
-.modal { width: min(430px, 100%); padding: 38px; border-radius: 14px; background: $cream; text-align: center; box-shadow: 0 20px 60px rgba(black,.25); .modal-icon { display: grid; place-items: center; width: 55px; height: 55px; background: #f7e7bd; color: $orange; border-radius: 50%; margin: 0 auto 18px; font-size: 25px; } h2 { margin: 8px 0; } p { color: #74827e; font-size: 12px; line-height: 1.6; } > strong { display: block; color: $green; font: 500 25px 'DM Mono'; margin: 20px; } button { border: 0; border-radius: 6px; background: $ink; color: white; padding: 12px 30px; cursor: pointer; } }
+.modal { width: min(430px, 100%); padding: 38px; border-radius: 14px; background: $cream; text-align: center; box-shadow: 0 20px 60px rgba(black,.25); .modal-icon { display: grid; place-items: center; width: 55px; height: 55px; background: #f7e7bd; color: $orange; border-radius: 50%; margin: 0 auto 18px; font-size: 25px; &.warn { background: #f6d9d6; color: #b3413a; } } h2 { margin: 8px 0; } p { color: #74827e; font-size: 12px; line-height: 1.6; } > strong { display: block; color: $green; font: 500 25px 'DM Mono'; margin: 20px; } button { border: 0; border-radius: 6px; background: $ink; color: white; padding: 12px 30px; cursor: pointer; } }
+.modal-actions { display: flex; gap: 10px; margin-top: 22px; button { flex: 1; padding: 12px 14px; font-size: 12px; &.ghost { background: transparent; border: 1px solid $line; color: $ink; } } }
 
 @media (max-width: 950px) {
   .header-stats > div { padding: 18px 15px; min-width: 130px; }
@@ -147,11 +147,10 @@ footer { border-top: 1px solid $line; padding: 28px max(28px, calc((100vw - 1384
 @media (max-width: 650px) {
   .topbar { height: 68px; padding: 0 14px; } .brand strong { display: none; } .brand-mark { width: 36px !important; height: 36px !important; }
   .header-stats { margin: 0; flex: 1; > div { min-width: 0; flex: 1; padding: 10px; &:nth-child(3) { display: none; } } strong { font-size: 13px; } }
-  .header-actions .icon-button { display: none; } .level-badge { width: 41px; height: 41px; margin-left: 0; }
+  .header-actions .icon-button[data-action="mute"] { display: none; } .level-badge { width: 41px; height: 41px; margin-left: 0; }
   main { padding: 20px 12px 45px; } .scene-head { height: 86px; padding: 15px; } .weather { display: none; } .parking-scene { height: 350px; }
   .spaces { padding-right: 8%; grid-template-columns: repeat(5, minmax(34px, 1fr)); gap: 0 2px; } .parking-space { min-width: 25px; } .car { min-width: 25px; }
   .side-panel { display: block; } .section-heading { align-items: start; flex-direction: column; gap: 18px; } .filters { width: 100%; overflow-x: auto; display: flex; } .filters button { flex: 1; padding: 8px; }
   .upgrade-grid { grid-template-columns: 1fr; } .upgrades-section { padding-top: 40px; }
-  .activity { grid-template-columns: 1fr; margin-top: 40px; } .log-list { margin-top: 15px; }
-  footer { padding: 20px 14px; .brand, > span { display: none; } }
+  footer { padding: 20px 14px; flex-wrap: wrap; .brand, > span { display: none; } .restart-button { margin-left: 0; } }
 }

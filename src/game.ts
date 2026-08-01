@@ -15,7 +15,6 @@ export interface GameState {
   activeIncident: Incident | null;
   incidentCooldown: number;
   lastSavedAt: number;
-  log: string[];
 }
 
 export interface Incident {
@@ -59,17 +58,48 @@ export const INITIAL_STATE: GameState = {
   activeIncident: null,
   incidentCooldown: 80,
   lastSavedAt: Date.now(),
-  log: ['Dein Parkplatz ist eröffnet. Viel Erfolg!'],
 };
 
 export const upgradeCost = (upgrade: Upgrade, level: number): number =>
   Math.round(upgrade.baseCost * upgrade.costMultiplier ** level / 10) * 10;
 
-export const demandFactor = (state: GameState): number => {
-  const hour = state.minuteOfDay / 60;
-  const rushHour = hour >= 7 && hour <= 10 ? 1.25 : hour >= 16 && hour <= 19 ? 1.35 : hour >= 22 || hour <= 5 ? 0.45 : 0.85;
-  const priceFactor = Math.max(0.35, 1.2 - (state.price - 2.5) * 0.11);
-  return rushHour * priceFactor * (0.72 + state.reputation * 0.08);
+/** Neutral price: guests react to how far the tariff sits above or below it. */
+export const REFERENCE_PRICE = 2.5;
+/** How strongly demand reacts to the price. Above 1 the market is elastic. */
+export const PRICE_ELASTICITY = 1.6;
+
+/**
+ * Every increase of the hourly price costs demand, and it does so
+ * progressively: doubling the tariff roughly thirds the number of arrivals.
+ * Cheap parking attracts more guests, but the bonus is capped.
+ */
+export const priceDemandFactor = (price: number): number =>
+  Math.min(1.8, (REFERENCE_PRICE / Math.max(0.5, price)) ** PRICE_ELASTICITY);
+
+const timeOfDayFactor = (minuteOfDay: number): number => {
+  const hour = minuteOfDay / 60;
+  return hour >= 7 && hour <= 10 ? 1.25 : hour >= 16 && hour <= 19 ? 1.35 : hour >= 22 || hour <= 5 ? 0.45 : 0.85;
+};
+
+export const demandFactor = (state: GameState): number =>
+  timeOfDayFactor(state.minuteOfDay) * priceDemandFactor(state.price) * (0.72 + state.reputation * 0.08);
+
+/** Demand of a normal daytime hour at the reference price – the 100 % mark. */
+const BASELINE_DEMAND = timeOfDayFactor(12 * 60) * (0.72 + INITIAL_STATE.reputation * 0.08);
+
+/** Current demand relative to that baseline, e.g. 0.6 for "40 % below normal". */
+export const demandLevel = (state: GameState): number => demandFactor(state) / BASELINE_DEMAND;
+
+export const DEPARTURE_CHANCE = 0.12;
+
+/** Probability that a car arrives during one tick. */
+export const arrivalChance = (state: GameState): number =>
+  (0.13 + state.levels.gate * 0.045 + state.levels.automation * 0.07) * demandFactor(state);
+
+/** Share of spaces that stays occupied once arrivals and departures balance out. */
+export const expectedOccupancyRate = (state: GameState): number => {
+  const arrivals = Math.min(1, arrivalChance(state));
+  return arrivals / (arrivals + DEPARTURE_CHANCE);
 };
 
 export const incomePerMinute = (state: GameState): number => {
@@ -113,10 +143,6 @@ export const setHourlyPrice = (state: GameState, price: number): GameState => {
 
   const next = structuredClone(state);
   next.price = rounded;
-  const message = `Der Stundenpreis wurde auf ${next.price.toLocaleString('de-DE', { minimumFractionDigits: 2 })} € gesetzt.`;
-  // Stepping the price repeatedly should not flood the chronicle.
-  if (next.log[0]?.startsWith('Der Stundenpreis')) next.log[0] = message;
-  else next.log.unshift(message);
   return next;
 };
 
@@ -131,9 +157,8 @@ export const adjustHourlyPrice = (state: GameState, steps: number): GameState =>
 export const simulateTick = (state: GameState, random = Math.random): GameState => {
   const next: GameState = structuredClone(state);
 
-  const gateSpeed = 0.13 + next.levels.gate * 0.045 + next.levels.automation * 0.07;
-  if (next.occupied < next.spaces && random() < gateSpeed * demandFactor(next)) next.occupied += 1;
-  if (next.occupied > 0 && random() < 0.12) {
+  if (next.occupied < next.spaces && random() < arrivalChance(next)) next.occupied += 1;
+  if (next.occupied > 0 && random() < DEPARTURE_CHANCE) {
     next.occupied -= 1;
     next.carsServed += 1;
   }
@@ -151,7 +176,6 @@ export const simulateTick = (state: GameState, random = Math.random): GameState 
     ];
     const incident = incidents[Math.floor(random() * incidents.length)] ?? incidents[0];
     next.activeIncident = incident;
-    next.log.unshift(`${incident.title} – kümmere dich darum.`);
   }
 
   return next;
@@ -171,7 +195,6 @@ export const buyUpgrade = (state: GameState, id: UpgradeId): GameState => {
     next.spaces += 1;
     next.condition = Math.min(100, next.condition + 4);
   }
-  next.log.unshift(`${upgrade.name} wurde auf Stufe ${next.levels[id]} verbessert.`);
   return next;
 };
 
@@ -180,7 +203,6 @@ export const repairIncident = (state: GameState): GameState => {
   const incident = state.activeIncident;
   const next = structuredClone(state);
   next.cash -= incident.repairCost;
-  next.log.unshift(`${incident.title} wurde repariert.`);
   next.activeIncident = null;
   next.condition = Math.min(100, next.condition + 22);
   next.incidentCooldown = 100;
@@ -194,7 +216,6 @@ export const performMaintenance = (state: GameState): GameState => {
   next.cash -= cost;
   next.condition = 100;
   next.incidentCooldown = Math.max(100, next.incidentCooldown);
-  next.log.unshift('Die Wartung ist abgeschlossen. Alle Anlagen sind fit.');
   return next;
 };
 
@@ -203,7 +224,8 @@ export const maintenanceCost = (state: GameState): number => Math.round(35 + sta
 export const calculateOfflineProgress = (state: GameState, now: number): { state: GameState; earned: number; minutes: number } => {
   const elapsedMinutes = Math.max(0, Math.min(8 * 60, (now - state.lastSavedAt) / 60_000));
   const automationFactor = 0.45 + state.levels.automation * 0.15;
-  const averageOccupancy = Math.max(state.occupied, Math.round(state.spaces * 0.42));
+  // Offline demand follows the price just like the live simulation does.
+  const averageOccupancy = state.spaces * expectedOccupancyRate(state);
   const earned = averageOccupancy * (state.price / 60) * elapsedMinutes * automationFactor;
   const next = structuredClone(state);
   next.cash += earned;

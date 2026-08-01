@@ -1,0 +1,171 @@
+import './styles.scss';
+import {
+  buyUpgrade,
+  incomePerSecond,
+  GameState,
+  maintenanceCost,
+  performMaintenance,
+  repairIncident,
+  setPrice,
+  simulateTick,
+  UpgradeId,
+  upgradeCost,
+  upgrades,
+  TICK_INTERVAL_MS,
+} from './game';
+import { loadGame, resetGame, saveGame } from './storage';
+
+const app = document.querySelector<HTMLDivElement>('#app');
+if (!app) throw new Error('App container not found');
+
+const loaded = loadGame();
+let state = loaded.state;
+let selectedCategory: 'Alle' | 'Ausbau' | 'Service' | 'Automation' = 'Alle';
+let muted = false;
+let showOfflineModal = loaded.offlineEarned > 0.05;
+
+const money = (value: number): string => `${value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+const clock = (minutes: number): string => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
+const percent = (value: number): string => `${Math.round(value)}%`;
+
+const parkedCars = (game: GameState): string => Array.from({ length: game.spaces }, (_, index) => {
+  const occupied = index < game.occupied;
+  const colors = ['blue', 'cream', 'orange', 'green', 'purple'];
+  const color = colors[index % colors.length];
+  return `<div class="parking-space ${occupied ? 'occupied' : ''}"><span>${index + 1}</span>${occupied ? `<div class="car ${color}"><i></i><b></b></div>` : ''}</div>`;
+}).join('');
+
+const render = (): void => {
+  const occupancy = state.spaces ? state.occupied / state.spaces * 100 : 0;
+  const filtered = upgrades.filter((upgrade) => selectedCategory === 'Alle' || upgrade.category === selectedCategory);
+  const buildProgress = Math.min(100, state.spaces / 50 * 100);
+  const nextDeck = 50 - state.spaces;
+
+  app.innerHTML = `
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Parking Empire Startseite"><span class="brand-mark">P</span><strong>Parking<br><em>Empire</em></strong></a>
+      <div class="header-stats">
+        <div><span>KONTOSTAND</span><strong>${money(state.cash)}</strong></div>
+        <div><span>GEWINN / SEK.</span><strong class="positive" data-live-profit>+ ${money(incomePerSecond(state))}</strong></div>
+        <div><span>AUSLASTUNG</span><strong>${state.occupied} / ${state.spaces}</strong></div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" data-action="mute" aria-label="Ton ${muted ? 'einschalten' : 'ausschalten'}">${muted ? '╳' : '♫'}</button>
+        <button class="icon-button" data-action="reset" aria-label="Spielstand zurücksetzen">↻</button>
+        <div class="level-badge"><span>TAG</span><strong>${state.day}</strong></div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-grid">
+        <div class="parking-card">
+          <div class="scene-head">
+            <div><span class="eyebrow">DEIN STANDORT</span><h1>Sonnenallee 24</h1><p>Vorstadt · Stufe ${Math.max(1, Math.ceil(state.spaces / 15))}</p></div>
+            <div class="weather"><span>☀</span><div><strong>${clock(state.minuteOfDay)}</strong><small>Sonnig · 22°C</small></div></div>
+          </div>
+          <div class="parking-scene">
+            <div class="city city-left"></div><div class="city city-right"></div>
+            <div class="road road-top"><span>BUS</span><i></i><i></i></div>
+            <div class="lot">
+              <div class="lot-sign"><b>P</b><span>PARKEN<br>FREI</span></div>
+              <div class="spaces">${parkedCars(state)}</div>
+              <div class="gate"><span></span><i></i></div>
+              <div class="booth"><b>P</b><i></i></div>
+            </div>
+            <div class="road road-bottom"><div class="moving-car"></div></div>
+          </div>
+          <div class="scene-footer">
+            <div><span><i class="dot green-dot"></i>${state.occupied} belegt</span><span><i class="dot"></i>${state.spaces - state.occupied} frei</span></div>
+            <span class="live"><i></i> LIVE-BETRIEB</span>
+          </div>
+        </div>
+
+        <aside class="side-panel">
+          <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
+          <div class="metric"><div><span>Auslastung</span><strong>${Math.round(occupancy)}%</strong></div><div class="progress"><i style="width:${occupancy}%"></i></div><small>${state.occupied} von ${state.spaces} Plätzen belegt</small></div>
+          <div class="quick-stats">
+            <div><span>PREIS / STD.</span><strong>${money(state.price)}</strong><small>Markt: 3,00 €</small></div>
+            <div><span>BEWERTUNG</span><strong>${state.reputation.toFixed(1)} <em>★</em></strong><small>${Math.max(4, state.carsServed + 14)} Rezensionen</small></div>
+          </div>
+          <div class="price-control">
+            <div><label for="price-range">Parkpreis festlegen</label><output data-price-output>${money(state.price)} / h</output></div>
+            <input id="price-range" data-price type="range" min="0.5" max="10" step="0.1" value="${state.price}" aria-label="Preis pro Parkstunde" />
+            <div class="price-scale"><span>0,50 €</span><small>Freie Preiswahl beeinflusst die Nachfrage</small><span>10,00 €</span></div>
+          </div>
+          <div class="condition">
+            <div><span>Anlagenzustand</span><strong>${percent(state.condition)}</strong></div>
+            <div class="progress amber"><i style="width:${state.condition}%"></i></div>
+            <button class="text-button" data-action="maintenance" ${state.cash < maintenanceCost(state) || state.condition >= 99 ? 'disabled' : ''}>Wartung durchführen · ${money(maintenanceCost(state))}</button>
+          </div>
+          ${state.activeIncident ? `<div class="incident"><div class="incident-icon">!</div><div><strong>${state.activeIncident.title}</strong><p>${state.activeIncident.description}</p><button data-action="repair" ${state.cash < state.activeIncident.repairCost ? 'disabled' : ''}>Jetzt reparieren · ${money(state.activeIncident.repairCost)}</button></div></div>` : `<div class="all-good"><span>✓</span><div><strong>Alles läuft rund</strong><small>Keine offenen Störungen</small></div></div>`}
+          <div class="next-goal"><span>NÄCHSTES ZIEL</span><div><strong>Das erste Parkdeck</strong><b>${Math.round(buildProgress)}%</b></div><div class="progress dark"><i style="width:${buildProgress}%"></i></div><small>${nextDeck > 0 ? `Noch ${nextDeck} Stellplätze bis zum Ausbau` : 'Bereit für die nächste Ausbaustufe!'}</small></div>
+        </aside>
+      </section>
+
+      <section class="upgrades-section">
+        <div class="section-heading"><div><span class="eyebrow">INVESTIEREN & WACHSEN</span><h2>Verbesserungen</h2><p>Baue deinen Standort aus und steigere deinen Gewinn.</p></div>
+          <div class="filters">${(['Alle', 'Ausbau', 'Service', 'Automation'] as const).map(category => `<button class="${selectedCategory === category ? 'active' : ''}" data-filter="${category}">${category}</button>`).join('')}</div>
+        </div>
+        <div class="upgrade-grid">
+          ${filtered.map(upgrade => {
+            const level = state.levels[upgrade.id];
+            const cost = upgradeCost(upgrade, level);
+            const complete = level >= upgrade.maxLevel;
+            return `<article class="upgrade-card ${state.cash >= cost && !complete ? 'affordable' : ''}">
+              <div class="upgrade-icon">${upgrade.icon}</div>
+              <div class="upgrade-copy"><span>${upgrade.category.toUpperCase()}</span><h3>${upgrade.name}</h3><p>${upgrade.description}</p><div class="level-dots">${Array.from({ length: Math.min(5, upgrade.maxLevel) }, (_, index) => `<i class="${index < level ? 'filled' : ''}"></i>`).join('')}<small>STUFE ${level}/${upgrade.maxLevel}</small></div></div>
+              <button data-upgrade="${upgrade.id}" ${state.cash < cost || complete ? 'disabled' : ''}><span>${complete ? 'MAXIMAL' : 'VERBESSERN'}</span><strong>${complete ? '✓' : money(cost)}</strong></button>
+            </article>`;
+          }).join('')}
+        </div>
+      </section>
+
+      <section class="activity">
+        <div><span class="eyebrow">PARKPLATZ-CHRONIK</span><h2>Was gerade passiert</h2></div>
+        <div class="log-list">${state.log.slice(0, 3).map((item, index) => `<p><i>${index === 0 ? '●' : '○'}</i>${item}<span>${index === 0 ? 'gerade eben' : 'vor kurzem'}</span></p>`).join('')}</div>
+      </section>
+    </main>
+    <footer><div class="brand mini"><span class="brand-mark">P</span><strong>Parking <em>Empire</em></strong></div><p>Dein Parkplatz. Deine Regeln. Dein Imperium.</p><span>SPIELSTAND AUTOMATISCH GESPEICHERT</span></footer>
+    ${showOfflineModal ? `<div class="modal-backdrop" id="offline-modal"><div class="modal"><span class="modal-icon">☀</span><span class="eyebrow">WILLKOMMEN ZURÜCK</span><h2>Dein Parkplatz war fleißig.</h2><p>Während deiner Abwesenheit von ${Math.round(loaded.offlineMinutes)} Minuten wurden Einnahmen erzielt.</p><strong>+ ${money(loaded.offlineEarned)}</strong><button data-action="close-modal">Weiterbauen</button></div></div>` : ''}
+  `;
+};
+
+app.addEventListener('click', (event) => {
+  const target = (event.target as HTMLElement).closest<HTMLElement>('button, a');
+  if (!target) return;
+  if (target.matches('a')) event.preventDefault();
+  const filter = target.dataset.filter as typeof selectedCategory | undefined;
+  const upgrade = target.dataset.upgrade as UpgradeId | undefined;
+  if (filter) selectedCategory = filter;
+  if (upgrade) state = buyUpgrade(state, upgrade);
+  if (target.dataset.action === 'repair') state = repairIncident(state);
+  if (target.dataset.action === 'maintenance') state = performMaintenance(state);
+  if (target.dataset.action === 'mute') muted = !muted;
+  if (target.dataset.action === 'close-modal') {
+    showOfflineModal = false;
+    document.querySelector('#offline-modal')?.remove();
+  }
+  if (target.dataset.action === 'reset' && window.confirm('Möchtest du wirklich neu anfangen?')) {
+    resetGame();
+    window.location.reload();
+  }
+  if (target.dataset.action !== 'close-modal') render();
+});
+
+app.addEventListener('input', (event) => {
+  const target = event.target as HTMLInputElement;
+  if (!target.matches('[data-price]')) return;
+  state = setPrice(state, target.valueAsNumber);
+  const priceOutput = document.querySelector<HTMLOutputElement>('[data-price-output]');
+  const profitOutput = document.querySelector<HTMLElement>('[data-live-profit]');
+  if (priceOutput) priceOutput.textContent = `${money(state.price)} / h`;
+  if (profitOutput) profitOutput.textContent = `+ ${money(incomePerSecond(state))}`;
+});
+
+render();
+setInterval(() => {
+  state = simulateTick(state);
+  render();
+}, TICK_INTERVAL_MS);
+setInterval(() => saveGame(state), 5000);
+window.addEventListener('beforeunload', () => saveGame(state));

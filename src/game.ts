@@ -1,10 +1,14 @@
-export type UpgradeId = 'spaces' | 'gate' | 'lighting' | 'restroom' | 'automation';
+export type UpgradeId = 'spaces' | 'lighting' | 'cleaning' | 'advertising' | 'payment' | 'shelter';
+export type UpgradeCategory = 'Kapazität' | 'Nachfrage' | 'Erlös';
+export type IncidentId = 'payment' | 'cleaning' | 'lighting';
 
 export interface GameState {
   cash: number;
   lifetimeRevenue: number;
+  /** Capacity: how many cars can stand on the lot at the same time. */
   spaces: number;
-  occupied: number;
+  /** Share of the capacity that is taken, 0…1 – a continuous quantity. */
+  occupancy: number;
   price: number;
   reputation: number;
   levels: Record<UpgradeId, number>;
@@ -18,7 +22,7 @@ export interface GameState {
 }
 
 export interface Incident {
-  id: 'gate' | 'restroom' | 'lighting';
+  id: IncidentId;
   title: string;
   description: string;
   repairCost: number;
@@ -29,28 +33,39 @@ export interface Upgrade {
   name: string;
   description: string;
   icon: string;
-  category: 'Ausbau' | 'Service' | 'Automation';
+  category: UpgradeCategory;
   maxLevel: number | null;
   baseCost: number;
   costMultiplier: number;
+  /** Named stages, index = level. Used by upgrades that replace themselves. */
+  stages?: string[];
 }
 
+/** The payment system decides how much of the parked time really reaches the till. */
+export const PAYMENT_STAGES = [
+  { name: 'Kasse des Vertrauens', rate: 0.55 },
+  { name: 'Kassierer', rate: 0.75 },
+  { name: 'Kassenautomat', rate: 0.9 },
+  { name: 'Kennzeichenerkennung', rate: 0.99 },
+];
+
 export const upgrades: Upgrade[] = [
-  { id: 'spaces', name: 'Stellplatz bauen', description: '+1 Parkplatz – beliebig oft ausbaubar', icon: 'P', category: 'Ausbau', maxLevel: null, baseCost: 10, costMultiplier: 1.16 },
-  { id: 'gate', name: 'Schnellere Schranke', description: 'Fahrzeuge werden schneller bedient', icon: '↗', category: 'Ausbau', maxLevel: 6, baseCost: 160, costMultiplier: 1.8 },
-  { id: 'lighting', name: 'LED-Beleuchtung', description: 'Mehr Sicherheit und besserer Ruf', icon: '✦', category: 'Service', maxLevel: 3, baseCost: 240, costMultiplier: 2.1 },
-  { id: 'restroom', name: 'Saubere Toiletten', description: 'Zufriedene Gäste bleiben länger', icon: '◆', category: 'Service', maxLevel: 3, baseCost: 320, costMultiplier: 2.1 },
-  { id: 'automation', name: 'Kennzeichenerkennung', description: 'Mehr Offline-Ertrag, weniger Staus', icon: '◎', category: 'Automation', maxLevel: 3, baseCost: 650, costMultiplier: 2.6 },
+  { id: 'spaces', name: 'Stellplatz bauen', description: '+1 Stellplatz – mehr Angebot für die Nachfrage', icon: 'P', category: 'Kapazität', maxLevel: null, baseCost: 10, costMultiplier: 1.12 },
+  { id: 'lighting', name: 'LED-Beleuchtung', description: 'Sicheres Gefühl bei Nacht – mehr Nachfrage', icon: '✦', category: 'Nachfrage', maxLevel: 3, baseCost: 30, costMultiplier: 2.2 },
+  { id: 'cleaning', name: 'Reinigungsdienst', description: 'Saubere Flächen und Toiletten – mehr Nachfrage', icon: '◆', category: 'Nachfrage', maxLevel: 3, baseCost: 45, costMultiplier: 2.2 },
+  { id: 'advertising', name: 'Werbung', description: 'Mehr Menschen kennen deinen Parkplatz – beliebig oft steigerbar', icon: '▲', category: 'Nachfrage', maxLevel: null, baseCost: 40, costMultiplier: 1.34 },
+  { id: 'payment', name: 'Kassensystem', description: 'Weniger Gäste fahren ohne zu zahlen davon', icon: '€', category: 'Erlös', maxLevel: 3, baseCost: 55, costMultiplier: 2.8, stages: PAYMENT_STAGES.map((stage) => stage.name) },
+  { id: 'shelter', name: 'Überdachung', description: 'Trockene Autos – Gäste akzeptieren höhere Tarife', icon: '⌂', category: 'Erlös', maxLevel: 3, baseCost: 90, costMultiplier: 2.5 },
 ];
 
 export const INITIAL_STATE: GameState = {
   cash: 0,
   lifetimeRevenue: 0,
   spaces: 1,
-  occupied: 1,
+  occupancy: 0.8,
   price: 2.5,
   reputation: 3.6,
-  levels: { spaces: 0, gate: 0, lighting: 0, restroom: 0, automation: 0 },
+  levels: { spaces: 0, lighting: 0, cleaning: 0, advertising: 0, payment: 0, shelter: 0 },
   carsServed: 0,
   day: 1,
   minuteOfDay: 8 * 60 + 30,
@@ -60,79 +75,144 @@ export const INITIAL_STATE: GameState = {
   lastSavedAt: Date.now(),
 };
 
-export const upgradeCost = (upgrade: Upgrade, level: number): number =>
-  Math.round(upgrade.baseCost * upgrade.costMultiplier ** level / 10) * 10;
+/** Game minutes that pass during one real-time second. */
+export const MINUTES_PER_SECOND = 2;
+/** Step of a single price adjustment in euros. */
+export const PRICE_STEP = 0.1;
 
-/** Neutral price: guests react to how far the tariff sits above or below it. */
-export const REFERENCE_PRICE = 2.5;
-/** How strongly demand reacts to the price. Above 1 the market is elastic. */
-export const PRICE_ELASTICITY = 1.6;
+/** Cars that want to park at a fresh location for the price they consider fair. */
+export const BASE_ATTRACTION = 1.6;
+/** Hourly tariff the very first guests consider fair. */
+export const BASE_WILLINGNESS = 2.5;
+/** Above 1 the market is elastic: demand reacts more than proportionally. */
+export const PRICE_ELASTICITY = 1.7;
+/** How long an average guest stays – turns occupancy into served cars. */
+export const AVERAGE_STAY_HOURS = 1.5;
 
-/**
- * Every increase of the hourly price costs demand, and it does so
- * progressively: doubling the tariff roughly thirds the number of arrivals.
- * Cheap parking attracts more guests, but the bonus is capped.
- */
-export const priceDemandFactor = (price: number): number =>
-  Math.min(1.8, (REFERENCE_PRICE / Math.max(0.5, price)) ** PRICE_ELASTICITY);
+const DEMAND_PER_LEVEL: Record<UpgradeId, number> = { spaces: 0, lighting: 0.12, cleaning: 0.15, advertising: 0.2, payment: 0, shelter: 0 };
+const REPUTATION_PER_LEVEL: Record<UpgradeId, number> = { spaces: 0, lighting: 0.25, cleaning: 0.3, advertising: 0, payment: 0, shelter: 0.15 };
+/** Reputation lost when the lot turns away every single guest. */
+const CONGESTION_PENALTY = 2.2;
 
-const timeOfDayFactor = (minuteOfDay: number): number => {
+const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+
+export const upgradeCost = (upgrade: Upgrade, level: number): number => {
+  const raw = upgrade.baseCost * upgrade.costMultiplier ** level;
+  return raw < 100 ? Math.round(raw) : Math.round(raw / 10) * 10;
+};
+
+export const timeOfDayFactor = (minuteOfDay: number): number => {
   const hour = minuteOfDay / 60;
   return hour >= 7 && hour <= 10 ? 1.25 : hour >= 16 && hour <= 19 ? 1.35 : hour >= 22 || hour <= 5 ? 0.45 : 0.85;
 };
 
-export const demandFactor = (state: GameState): number =>
-  timeOfDayFactor(state.minuteOfDay) * priceDemandFactor(state.price) * (0.72 + state.reputation * 0.08);
+export const paymentStage = (state: GameState): { name: string; rate: number } =>
+  PAYMENT_STAGES[Math.min(state.levels.payment, PAYMENT_STAGES.length - 1)];
 
-/** Demand of a normal daytime hour at the reference price – the 100 % mark. */
-const BASELINE_DEMAND = timeOfDayFactor(12 * 60) * (0.72 + INITIAL_STATE.reputation * 0.08);
+/** Share of the parked time that actually ends up in the till. */
+export const paymentRate = (state: GameState): number =>
+  paymentStage(state).rate * (state.activeIncident?.id === 'payment' ? 0.6 : 1);
 
-/** Current demand relative to that baseline, e.g. 0.6 for "40 % below normal". */
-export const demandLevel = (state: GameState): number => demandFactor(state) / BASELINE_DEMAND;
+/** Hourly tariff guests accept without looking for another lot. */
+export const willingnessToPay = (state: GameState): number =>
+  BASE_WILLINGNESS * (1 + state.levels.shelter * 0.1 + state.levels.payment * 0.06);
 
-export const DEPARTURE_CHANCE = 0.12;
-
-/** Probability that a car arrives during one tick. */
-export const arrivalChance = (state: GameState): number =>
-  (0.13 + state.levels.gate * 0.045 + state.levels.automation * 0.07) * demandFactor(state);
-
-/** Share of spaces that stays occupied once arrivals and departures balance out. */
-export const expectedOccupancyRate = (state: GameState): number => {
-  const arrivals = Math.min(1, arrivalChance(state));
-  return arrivals / (arrivals + DEPARTURE_CHANCE);
+/** How attractive the lot is before the price enters the picture. */
+const attraction = (state: GameState): number => {
+  const upgradeBonus = (Object.keys(DEMAND_PER_LEVEL) as UpgradeId[])
+    .reduce((total, id) => total + state.levels[id] * DEMAND_PER_LEVEL[id], 0);
+  const incidentPenalty = state.activeIncident && state.activeIncident.id !== 'payment' ? 0.8 : 1;
+  const reputationFactor = Math.max(0.25, 0.6 + state.reputation * 0.11);
+  return BASE_ATTRACTION * (1 + upgradeBonus) * incidentPenalty * reputationFactor * timeOfDayFactor(state.minuteOfDay);
 };
 
-export const incomePerMinute = (state: GameState): number => {
-  const incidentPenalty = state.activeIncident?.id === 'gate' ? 0.55 : 1;
-  const comfort = 1 + state.levels.restroom * 0.08;
-  return state.occupied * (state.price / 60) * comfort * incidentPenalty;
+/** Even a free lot only draws the guests that pass by – the catchment limit. */
+export const MAX_DEMAND_FACTOR = 3;
+
+/**
+ * Cars that want to park right now at the given price. Every euro above the
+ * willingness to pay costs demand progressively, every euro below wins guests.
+ */
+export const demandAt = (state: GameState, price: number): number => {
+  const priceFactor = Math.min(MAX_DEMAND_FACTOR, (willingnessToPay(state) / Math.max(0.25, price)) ** PRICE_ELASTICITY);
+  return attraction(state) * priceFactor;
 };
 
-/** Game minutes that pass during one real-time second. */
-export const MINUTES_PER_SECOND = 2;
+export const demand = (state: GameState): number => demandAt(state, state.price);
 
-/** Step of a single price adjustment in euros. */
-export const PRICE_STEP = 0.1;
+/**
+ * The price at which demand exactly meets the capacity – the market clears.
+ * It follows supply and demand: more spaces push it down, more attraction or a
+ * higher willingness to pay push it up. If even the catchment limit cannot fill
+ * the lot, it returns the cheapest price that still adds guests.
+ */
+export const marketPrice = (state: GameState): number => {
+  const required = Math.min(MAX_DEMAND_FACTOR, Math.max(1e-6, Math.max(1, state.spaces) / attraction(state)));
+  return willingnessToPay(state) / required ** (1 / PRICE_ELASTICITY);
+};
+
+/** Occupancy the lot drifts towards: demand, capped by the capacity. */
+export const targetOccupancy = (state: GameState): number => Math.min(1, demand(state) / Math.max(1, state.spaces));
+
+/** Share of interested guests that finds no free space. */
+export const turnedAwayShare = (state: GameState): number => {
+  const wanted = demand(state);
+  return wanted > state.spaces ? (wanted - state.spaces) / wanted : 0;
+};
+
+export const targetReputation = (state: GameState): number => {
+  const upgradeBonus = (Object.keys(REPUTATION_PER_LEVEL) as UpgradeId[])
+    .reduce((total, id) => total + state.levels[id] * REPUTATION_PER_LEVEL[id], 0);
+  // A lot that is permanently full sends guests away, and they leave bad reviews.
+  const congestion = CONGESTION_PENALTY * turnedAwayShare(state);
+  return clamp(3.4 + upgradeBonus - congestion - (state.activeIncident ? 0.4 : 0), 1, 5);
+};
+
+/** Revenue per game hour: capacity × occupancy × price × payment rate. */
+export const revenuePerHour = (state: GameState): number =>
+  state.occupancy * state.spaces * state.price * paymentRate(state);
+
+export const incomePerMinute = (state: GameState): number => revenuePerHour(state) / 60;
 
 export const incomePerSecond = (state: GameState): number => incomePerMinute(state) * MINUTES_PER_SECOND;
 
+/** Time constants in real-time seconds. */
+const OCCUPANCY_TAU = 8;
+const REPUTATION_TAU = 120;
+const CONDITION_WEAR_PER_MINUTE = 0.0035;
+
+/** Frame-rate independent share of the remaining distance to cover. */
+const ease = (seconds: number, tau: number): number => 1 - Math.exp(-seconds / tau);
+
 /**
- * Advances the clock and books revenue for an arbitrary slice of real time so
- * cash grows continuously instead of jumping once per tick.
+ * All continuous dynamics for an arbitrary slice of real time: the clock, the
+ * lot filling up or emptying, revenue, reviews and wear. Called every frame, so
+ * cash and occupancy flow instead of jumping.
  */
 export const advanceTime = (state: GameState, seconds: number): GameState => {
   if (!Number.isFinite(seconds) || seconds <= 0) return state;
   const next = structuredClone(state);
   const minutes = seconds * MINUTES_PER_SECOND;
+
   next.minuteOfDay += minutes;
   while (next.minuteOfDay >= 1440) {
     next.minuteOfDay -= 1440;
     next.day += 1;
   }
 
-  const earned = incomePerMinute(next) * minutes;
+  const before = next.occupancy;
+  next.occupancy = clamp(before + (targetOccupancy(next) - before) * ease(seconds, OCCUPANCY_TAU), 0, 1);
+  // Bill the average occupancy of the slice, so the result does not depend on
+  // how finely the elapsed time is chopped up.
+  const average = (before + next.occupancy) / 2;
+
+  const earned = incomePerMinute({ ...next, occupancy: average }) * minutes;
   next.cash += earned;
   next.lifetimeRevenue += earned;
+  next.carsServed += average * next.spaces * (minutes / 60) / AVERAGE_STAY_HOURS;
+
+  next.reputation += (targetReputation(next) - next.reputation) * ease(seconds, REPUTATION_TAU);
+  next.condition = Math.max(20, next.condition - CONDITION_WEAR_PER_MINUTE * minutes * (1 + next.spaces / 20));
   return next;
 };
 
@@ -150,32 +230,19 @@ export const setHourlyPrice = (state: GameState, price: number): GameState => {
 export const adjustHourlyPrice = (state: GameState, steps: number): GameState =>
   setHourlyPrice(state, Math.max(0, state.price + steps * PRICE_STEP));
 
-/**
- * Discrete events of one real-time second: arrivals, departures, wear and
- * incidents. Revenue and the clock are handled by `advanceTime`.
- */
+const INCIDENTS: Incident[] = [
+  { id: 'payment', title: 'Kasse gestört', description: 'Ein Teil der Einnahmen kommt nicht an.', repairCost: 90 },
+  { id: 'cleaning', title: 'Toilette gesperrt', description: 'Gäste meiden den Parkplatz.', repairCost: 70 },
+  { id: 'lighting', title: 'Beleuchtung defekt', description: 'Abends kommen weniger Gäste.', repairCost: 55 },
+];
+
+/** The one discrete event per real-time second: something breaks, or it doesn't. */
 export const simulateTick = (state: GameState, random = Math.random): GameState => {
   const next: GameState = structuredClone(state);
-
-  if (next.occupied < next.spaces && random() < arrivalChance(next)) next.occupied += 1;
-  if (next.occupied > 0 && random() < DEPARTURE_CHANCE) {
-    next.occupied -= 1;
-    next.carsServed += 1;
-  }
-
-  const targetReputation = 3.4 + next.levels.lighting * 0.25 + next.levels.restroom * 0.3 - (next.activeIncident ? 0.35 : 0);
-  next.reputation += (Math.min(5, targetReputation) - next.reputation) * 0.008;
-  next.condition = Math.max(20, next.condition - 0.007 * (1 + next.spaces / 20));
   next.incidentCooldown -= 1;
 
   if (!next.activeIncident && next.incidentCooldown <= 0 && next.condition < 92 && random() < 0.018) {
-    const incidents: Incident[] = [
-      { id: 'gate', title: 'Schranke blockiert', description: 'Der Durchsatz ist reduziert.', repairCost: 90 },
-      { id: 'restroom', title: 'Toilette gesperrt', description: 'Dein Ruf sinkt langsam.', repairCost: 70 },
-      { id: 'lighting', title: 'Beleuchtung defekt', description: 'Gäste fühlen sich weniger sicher.', repairCost: 55 },
-    ];
-    const incident = incidents[Math.floor(random() * incidents.length)] ?? incidents[0];
-    next.activeIncident = incident;
+    next.activeIncident = INCIDENTS[Math.floor(random() * INCIDENTS.length)] ?? INCIDENTS[0];
   }
 
   return next;
@@ -193,6 +260,8 @@ export const buyUpgrade = (state: GameState, id: UpgradeId): GameState => {
   next.levels[id] += 1;
   if (id === 'spaces') {
     next.spaces += 1;
+    // The new space is empty, so the occupied share drops right away.
+    next.occupancy = clamp(next.occupancy * (next.spaces - 1) / next.spaces, 0, 1);
     next.condition = Math.min(100, next.condition + 4);
   }
   return next;
@@ -223,13 +292,14 @@ export const maintenanceCost = (state: GameState): number => Math.round(35 + sta
 
 export const calculateOfflineProgress = (state: GameState, now: number): { state: GameState; earned: number; minutes: number } => {
   const elapsedMinutes = Math.max(0, Math.min(8 * 60, (now - state.lastSavedAt) / 60_000));
-  const automationFactor = 0.45 + state.levels.automation * 0.15;
-  // Offline demand follows the price just like the live simulation does.
-  const averageOccupancy = state.spaces * expectedOccupancyRate(state);
-  const earned = averageOccupancy * (state.price / 60) * elapsedMinutes * automationFactor;
+  // Without supervision only the automated part of the till keeps working.
+  const unattendedFactor = 0.5 + state.levels.payment * 0.12;
+  const occupancy = targetOccupancy(state);
+  const earned = occupancy * state.spaces * state.price * paymentRate(state) * (elapsedMinutes / 60) * unattendedFactor;
   const next = structuredClone(state);
   next.cash += earned;
   next.lifetimeRevenue += earned;
+  next.occupancy = occupancy;
   next.lastSavedAt = now;
   return { state: next, earned, minutes: elapsedMinutes };
 };

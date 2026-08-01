@@ -4,8 +4,10 @@ import {
   buyUpgrade,
   GameState,
   INITIAL_STATE,
-  incomePerSecond,
+  profitPerSecond,
+  fixedCostPerHour,
   marketPrice,
+  revenuePerHour,
   setHourlyPrice,
   simulateTick,
   targetOccupancy,
@@ -14,10 +16,10 @@ import {
   upgrades,
 } from './game';
 
-/** Income the state settles on once it is priced at the market and filled up. */
+/** Profit the state settles on once it is priced at the market and filled up. */
 const settledIncome = (state: GameState): number => {
   const priced = setHourlyPrice(state, Math.max(0.1, marketPrice(state)));
-  return incomePerSecond({ ...priced, occupancy: targetOccupancy(priced) });
+  return profitPerSecond({ ...priced, occupancy: targetOccupancy(priced) });
 };
 
 /**
@@ -55,12 +57,16 @@ describe('balance', () => {
     const start = structuredClone(INITIAL_STATE);
     const after = play(60);
 
-    expect(settledIncome(after)).toBeGreaterThan(settledIncome(start) * 4);
-    expect(after.lifetimeRevenue).toBeGreaterThan(150);
-    // Growth comes from all three levers, not from capacity alone.
-    expect(after.spaces).toBeGreaterThan(5);
+    expect(settledIncome(after)).toBeGreaterThan(settledIncome(start) * 10);
+    expect(after.lifetimeRevenue).toBeGreaterThan(300);
+    // Growth comes from every lever, not from capacity alone.
+    expect(after.levels.location).toBeGreaterThan(0);
+    expect(after.spaces).toBeGreaterThan(8);
     expect(after.levels.advertising + after.levels.lighting + after.levels.cleaning).toBeGreaterThan(2);
     expect(after.levels.payment).toBeGreaterThan(0);
+    // The fixed costs stay a real but payable share of the revenue.
+    expect(fixedCostPerHour(after)).toBeGreaterThan(1);
+    expect(fixedCostPerHour(after)).toBeLessThan(revenuePerHour({ ...after, occupancy: targetOccupancy(after) }));
   });
 
   it('moves the optimal price as the lot grows', () => {

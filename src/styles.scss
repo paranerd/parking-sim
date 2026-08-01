@@ -7,14 +7,18 @@ $paper: #f3f0e6;
 $cream: #fbfaf5;
 $line: #d7d5ca;
 $orange: #f2a447;
+$red: #b3413a;
 
 * { box-sizing: border-box; }
+.positive { color: $green; }
+.negative { color: $red; }
 body { margin: 0; background: $paper; color: $ink; font-family: 'Manrope', sans-serif; min-width: 320px; }
 button, a { font: inherit; }
 button { color: inherit; }
 .topbar { height: 86px; display: flex; align-items: center; padding: 0 max(28px, calc((100vw - 1440px) / 2)); border-bottom: 1px solid $line; background: rgba($cream, .94); position: sticky; top: 0; z-index: 20; backdrop-filter: blur(12px); }
 .brand { display: flex; align-items: center; gap: 11px; width: 250px; color: $ink; text-decoration: none; line-height: .88; letter-spacing: -.04em; .brand-mark { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 7px; background: $ink; color: $lime; font-size: 24px; font-weight: 800; font-family: 'DM Mono'; } strong { font-size: 18px; } em { color: $green; font-style: normal; } }
-.header-stats { align-self: stretch; display: flex; margin: 0 auto; > div { padding: 18px 38px; border-left: 1px solid $line; display: flex; flex-direction: column; justify-content: center; min-width: 180px; } span, .eyebrow { font: 500 9px 'DM Mono'; letter-spacing: .14em; color: #71817c; margin-bottom: 4px; } strong { font: 500 18px 'DM Mono'; } .positive { color: $green; } }
+.header-stats { align-self: stretch; display: flex; margin: 0 auto; > div, > .cash-stat { padding: 18px 30px; border-left: 1px solid $line; display: flex; flex-direction: column; justify-content: center; min-width: 175px; } span, .eyebrow { font: 500 9px 'DM Mono'; letter-spacing: .14em; color: #71817c; margin-bottom: 4px; } strong { font: 500 18px 'DM Mono'; } .positive { color: $green; } .negative { color: $red; } }
+.cash-stat { border-top: 0; border-right: 0; border-bottom: 0; background: transparent; text-align: left; align-items: flex-start; cursor: pointer; transition: background .15s; &:hover, &:focus-visible { background: rgba($ink, .04); } small { font: 500 9px 'DM Mono'; margin-top: 4px; letter-spacing: .02em; i { font-style: normal; opacity: .45; margin-left: 2px; } } }
 .header-actions { display: flex; align-items: center; gap: 8px; .icon-button { border: 1px solid $line; background: transparent; border-radius: 50%; width: 37px; height: 37px; cursor: pointer; } }
 .level-badge { margin-left: 12px; width: 52px; height: 52px; border-radius: 50%; background: $lime; display: grid; place-content: center; text-align: center; line-height: 1; span { font: 500 8px 'DM Mono'; } strong { font-size: 18px; } }
 main { max-width: 1440px; margin: 0 auto; padding: 42px 28px 70px; }
@@ -45,12 +49,14 @@ main { max-width: 1440px; margin: 0 auto; padding: 42px 28px 70px; }
 .side-panel { padding: 24px; }
 .panel-title { display: flex; justify-content: space-between; align-items: start; border-bottom: 1px solid $line; padding-bottom: 19px; h2 { margin: 4px 0 0; font-size: 20px; } }
 .day-pill { font: 500 9px 'DM Mono'; background: #e8eadf; padding: 6px 9px; border-radius: 15px; }
+.info-button { border: 1px solid $line; background: transparent; color: #85908d; width: 15px; height: 15px; border-radius: 50%; font: 500 9px 'DM Mono'; line-height: 1; padding: 0; margin-left: 4px; cursor: pointer; vertical-align: 1px; &:hover { background: $ink; border-color: $ink; color: white; } }
 .metric { padding: 21px 0; border-bottom: 1px solid $line; > div:first-child, .condition > div:first-child { display: flex; justify-content: space-between; font-size: 12px; } strong { font: 500 15px 'DM Mono'; } small { color: #87918f; font-size: 10px; } }
 .progress { height: 7px; border-radius: 9px; background: #e4e4dc; overflow: hidden; margin: 8px 0; i { display: block; height: 100%; background: $green; border-radius: inherit; } &.amber i { background: $orange; } &.dark { height: 5px; i { background: $ink; } } }
 .market-hint { padding: 13px 0; border-bottom: 1px solid $line; font-size: 10px; line-height: 1.5; color: #6f7c78; &::before { content: '◎ '; color: $green; } &.tight { color: #8e4d19; &::before { content: '! '; color: #b3413a; font-weight: 700; } } }
+.quick-stats.bottom { border-bottom: 0; .text-button { font-size: 9px; text-decoration: underline; } }
 .quick-stats { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid $line; > div { padding: 16px 0; display: flex; flex-direction: column; min-width: 0; &:nth-child(odd) { border-right: 1px solid $line; padding-right: 14px; } &:nth-child(even) { padding-left: 16px; } &:nth-child(n+3) { border-top: 1px solid $line; } } span { font: 500 8px 'DM Mono'; color: #85908d; letter-spacing: .1em; } strong { font: 500 16px 'DM Mono'; margin: 5px 0; } b { font-weight: 500; } small { font-size: 9px; color: #86918d; } em { color: $orange; font-style: normal; } }
 .price-setting { > span { font: 500 8px 'DM Mono'; color: #85908d; letter-spacing: .1em; } small b { font: 500 9px 'DM Mono'; color: $green; } }
-.upgrade-copy p em { display: block; margin-top: 5px; color: $green; font-style: normal; font-size: 9px; }
+.upgrade-copy p em { display: block; margin-top: 5px; color: $green; font-style: normal; font-size: 9px; &.cost { color: #99764a; } }
 .price-stepper {
   display: flex;
   align-items: center;
@@ -136,7 +142,19 @@ main { max-width: 1440px; margin: 0 auto; padding: 42px 28px 70px; }
 footer { border-top: 1px solid $line; padding: 28px max(28px, calc((100vw - 1384px)/2)); display: flex; align-items: center; gap: 25px; color: #7f8b87; font-size: 10px; .mini { width: auto; strong { font-size: 12px; } .brand-mark { width: 25px; height: 25px; font-size: 14px; } } > span { font: 500 8px 'DM Mono'; letter-spacing: .1em; } }
 .restart-button { margin-left: auto; border: 1px solid $line; background: transparent; border-radius: 6px; padding: 9px 16px; color: $ink; font-size: 10px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; &:hover { background: #b3413a; border-color: #b3413a; color: white; } }
 .modal-backdrop { position: fixed; inset: 0; background: rgba($ink,.68); z-index: 50; display: grid; place-items: center; padding: 20px; backdrop-filter: blur(4px); }
-.modal { width: min(430px, 100%); padding: 38px; border-radius: 14px; background: $cream; text-align: center; box-shadow: 0 20px 60px rgba(black,.25); .modal-icon { display: grid; place-items: center; width: 55px; height: 55px; background: #f7e7bd; color: $orange; border-radius: 50%; margin: 0 auto 18px; font-size: 25px; &.warn { background: #f6d9d6; color: #b3413a; } } h2 { margin: 8px 0; } p { color: #74827e; font-size: 12px; line-height: 1.6; } > strong { display: block; color: $green; font: 500 25px 'DM Mono'; margin: 20px; } button { border: 0; border-radius: 6px; background: $ink; color: white; padding: 12px 30px; cursor: pointer; } }
+.modal.wide { width: min(640px, 100%); text-align: left; h2 { font-size: 22px; margin: 6px 0 18px; } > button { width: 100%; margin-top: 20px; } }
+.ledger { width: 100%; border-collapse: collapse; font-size: 12px;
+  th, td { text-align: left; padding: 6px 0; border-bottom: 1px solid rgba($line, .6); }
+  td:last-child { text-align: right; font: 500 12px 'DM Mono'; white-space: nowrap; padding-left: 14px; }
+  em { font-style: normal; color: #86918d; font-size: 10px; }
+  .section th { font: 500 8px 'DM Mono'; letter-spacing: .12em; color: $green; padding-top: 18px; border-bottom: 1px solid $line; }
+  .section:first-child th { padding-top: 0; }
+  .sum td { font-weight: 700; border-bottom: 0; border-top: 1px solid $line; }
+  .cost { color: $red; }
+  .total td { font-weight: 700; border-bottom: 0; padding-top: 10px; &:last-child { font-size: 14px; } }
+}
+.note { background: #eef1e8; border-radius: 8px; padding: 14px 16px; font-size: 11px !important; line-height: 1.7 !important; margin-top: 18px !important; }
+.modal { width: min(430px, 100%); padding: 38px; border-radius: 14px; background: $cream; text-align: center; box-shadow: 0 20px 60px rgba(black,.25); .modal-icon { display: grid; place-items: center; width: 55px; height: 55px; background: #f7e7bd; color: $orange; border-radius: 50%; margin: 0 auto 18px; font-size: 25px; &.warn { background: #f6d9d6; color: #b3413a; } } h2 { margin: 8px 0; } p { color: #74827e; font-size: 12px; line-height: 1.6; } > strong { display: block; color: $green; font: 500 25px 'DM Mono'; margin: 20px; &.negative { color: $red; } } button { border: 0; border-radius: 6px; background: $ink; color: white; padding: 12px 30px; cursor: pointer; } }
 .modal-actions { display: flex; gap: 10px; margin-top: 22px; button { flex: 1; padding: 12px 14px; font-size: 12px; &.ghost { background: transparent; border: 1px solid $line; color: $ink; } } }
 
 @media (max-width: 950px) {

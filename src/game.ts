@@ -1,5 +1,5 @@
-export type UpgradeId = 'spaces' | 'lighting' | 'cleaning' | 'advertising' | 'payment' | 'shelter';
-export type UpgradeCategory = 'Kapazität' | 'Nachfrage' | 'Erlös';
+export type UpgradeId = 'location' | 'spaces' | 'lighting' | 'cleaning' | 'advertising' | 'payment' | 'shelter';
+export type UpgradeCategory = 'Standort' | 'Kapazität' | 'Nachfrage' | 'Erlös';
 export type IncidentId = 'payment' | 'cleaning' | 'lighting';
 
 export interface GameState {
@@ -41,19 +41,36 @@ export interface Upgrade {
   stages?: string[];
 }
 
-/** The payment system decides how much of the parked time really reaches the till. */
+/**
+ * The payment system decides how much of the parked time really reaches the
+ * till – and what it costs per hour to run it. The honesty box is free but
+ * leaky, a cashier collects far more but wants a salary.
+ */
 export const PAYMENT_STAGES = [
-  { name: 'Kasse des Vertrauens', rate: 0.55 },
-  { name: 'Kassierer', rate: 0.75 },
-  { name: 'Kassenautomat', rate: 0.9 },
-  { name: 'Kennzeichenerkennung', rate: 0.99 },
+  { name: 'Kasse des Vertrauens', rate: 0.55, costPerHour: 0 },
+  { name: 'Kassierer', rate: 0.78, costPerHour: 2.4 },
+  { name: 'Kassenautomat', rate: 0.9, costPerHour: 0.5 },
+  { name: 'Kennzeichenerkennung', rate: 0.99, costPerHour: 0.25 },
+];
+
+/**
+ * The location sets the base demand: how many cars want to park here at all.
+ * Better spots draw far more guests and carry a higher tariff, but the rent
+ * has to be earned back every hour.
+ */
+export const LOCATIONS = [
+  { name: 'Vorstadt', address: 'Sonnenallee 24', baseDemand: 1.8, rentPerHour: 0.25, willingnessFactor: 1 },
+  { name: 'Einkaufsstraße', address: 'Marktplatz 8', baseDemand: 5.5, rentPerHour: 2.2, willingnessFactor: 1.4 },
+  { name: 'Bahnhof', address: 'Bahnhofsplatz 1', baseDemand: 17, rentPerHour: 12, willingnessFactor: 1.9 },
+  { name: 'Flughafen', address: 'Terminalring 3', baseDemand: 52, rentPerHour: 65, willingnessFactor: 3 },
 ];
 
 export const upgrades: Upgrade[] = [
+  { id: 'location', name: 'Standort verlegen', description: 'Ein besserer Standort bringt deutlich mehr Basis-Nachfrage – und mehr Miete', icon: '⚑', category: 'Standort', maxLevel: 3, baseCost: 120, costMultiplier: 8, stages: LOCATIONS.map((location) => location.name) },
   { id: 'spaces', name: 'Stellplatz bauen', description: '+1 Stellplatz – mehr Angebot für die Nachfrage', icon: 'P', category: 'Kapazität', maxLevel: null, baseCost: 10, costMultiplier: 1.12 },
   { id: 'lighting', name: 'LED-Beleuchtung', description: 'Sicheres Gefühl bei Nacht – mehr Nachfrage', icon: '✦', category: 'Nachfrage', maxLevel: 3, baseCost: 30, costMultiplier: 2.2 },
   { id: 'cleaning', name: 'Reinigungsdienst', description: 'Saubere Flächen und Toiletten – mehr Nachfrage', icon: '◆', category: 'Nachfrage', maxLevel: 3, baseCost: 45, costMultiplier: 2.2 },
-  { id: 'advertising', name: 'Werbung', description: 'Mehr Menschen kennen deinen Parkplatz – beliebig oft steigerbar', icon: '▲', category: 'Nachfrage', maxLevel: null, baseCost: 40, costMultiplier: 1.34 },
+  { id: 'advertising', name: 'Werbung', description: 'Mehr Menschen am Standort kennen deinen Parkplatz', icon: '▲', category: 'Nachfrage', maxLevel: 5, baseCost: 40, costMultiplier: 1.9 },
   { id: 'payment', name: 'Kassensystem', description: 'Weniger Gäste fahren ohne zu zahlen davon', icon: '€', category: 'Erlös', maxLevel: 3, baseCost: 55, costMultiplier: 2.8, stages: PAYMENT_STAGES.map((stage) => stage.name) },
   { id: 'shelter', name: 'Überdachung', description: 'Trockene Autos – Gäste akzeptieren höhere Tarife', icon: '⌂', category: 'Erlös', maxLevel: 3, baseCost: 90, costMultiplier: 2.5 },
 ];
@@ -65,7 +82,7 @@ export const INITIAL_STATE: GameState = {
   occupancy: 0.8,
   price: 2.5,
   reputation: 3.6,
-  levels: { spaces: 0, lighting: 0, cleaning: 0, advertising: 0, payment: 0, shelter: 0 },
+  levels: { location: 0, spaces: 0, lighting: 0, cleaning: 0, advertising: 0, payment: 0, shelter: 0 },
   carsServed: 0,
   day: 1,
   minuteOfDay: 8 * 60 + 30,
@@ -80,8 +97,6 @@ export const MINUTES_PER_SECOND = 2;
 /** Step of a single price adjustment in euros. */
 export const PRICE_STEP = 0.1;
 
-/** Cars that want to park at a fresh location for the price they consider fair. */
-export const BASE_ATTRACTION = 1.6;
 /** Hourly tariff the very first guests consider fair. */
 export const BASE_WILLINGNESS = 2.5;
 /** Above 1 the market is elastic: demand reacts more than proportionally. */
@@ -89,8 +104,13 @@ export const PRICE_ELASTICITY = 1.7;
 /** How long an average guest stays – turns occupancy into served cars. */
 export const AVERAGE_STAY_HOURS = 1.5;
 
-const DEMAND_PER_LEVEL: Record<UpgradeId, number> = { spaces: 0, lighting: 0.12, cleaning: 0.15, advertising: 0.2, payment: 0, shelter: 0 };
-const REPUTATION_PER_LEVEL: Record<UpgradeId, number> = { spaces: 0, lighting: 0.25, cleaning: 0.3, advertising: 0, payment: 0, shelter: 0.15 };
+/** Share of extra demand each upgrade level attracts. */
+const DEMAND_PER_LEVEL: Record<UpgradeId, number> = { location: 0, spaces: 0, lighting: 0.18, cleaning: 0.22, advertising: 0.3, payment: 0, shelter: 0.08 };
+const REPUTATION_PER_LEVEL: Record<UpgradeId, number> = { location: 0, spaces: 0, lighting: 0.25, cleaning: 0.3, advertising: 0, payment: 0, shelter: 0.15 };
+/** Running cost per level and hour – lighting burns power, cleaning needs staff. */
+const RUNNING_COST_PER_LEVEL: Record<UpgradeId, number> = { location: 0, spaces: 0, lighting: 0.15, cleaning: 0.35, advertising: 0.5, payment: 0, shelter: 0.1 };
+/** Upkeep of a single space per hour. */
+export const COST_PER_SPACE = 0.06;
 /** Reputation lost when the lot turns away every single guest. */
 const CONGESTION_PENALTY = 2.2;
 
@@ -106,8 +126,11 @@ export const timeOfDayFactor = (minuteOfDay: number): number => {
   return hour >= 7 && hour <= 10 ? 1.25 : hour >= 16 && hour <= 19 ? 1.35 : hour >= 22 || hour <= 5 ? 0.45 : 0.85;
 };
 
-export const paymentStage = (state: GameState): { name: string; rate: number } =>
+export const paymentStage = (state: GameState): typeof PAYMENT_STAGES[number] =>
   PAYMENT_STAGES[Math.min(state.levels.payment, PAYMENT_STAGES.length - 1)];
+
+export const currentLocation = (state: GameState): typeof LOCATIONS[number] =>
+  LOCATIONS[Math.min(state.levels.location, LOCATIONS.length - 1)];
 
 /** Share of the parked time that actually ends up in the till. */
 export const paymentRate = (state: GameState): number =>
@@ -115,15 +138,23 @@ export const paymentRate = (state: GameState): number =>
 
 /** Hourly tariff guests accept without looking for another lot. */
 export const willingnessToPay = (state: GameState): number =>
-  BASE_WILLINGNESS * (1 + state.levels.shelter * 0.1 + state.levels.payment * 0.06);
+  BASE_WILLINGNESS * currentLocation(state).willingnessFactor * (1 + state.levels.shelter * 0.1 + state.levels.payment * 0.06);
 
-/** How attractive the lot is before the price enters the picture. */
-const attraction = (state: GameState): number => {
-  const upgradeBonus = (Object.keys(DEMAND_PER_LEVEL) as UpgradeId[])
-    .reduce((total, id) => total + state.levels[id] * DEMAND_PER_LEVEL[id], 0);
+/** Extra demand from equipment: lighting, cleaning, advertising, shelter. */
+export const equipmentFactor = (state: GameState): number =>
+  1 + (Object.keys(DEMAND_PER_LEVEL) as UpgradeId[]).reduce((total, id) => total + state.levels[id] * DEMAND_PER_LEVEL[id], 0);
+
+/** Reviews pull guests in or push them away. */
+export const reputationFactor = (state: GameState): number => Math.max(0.25, 0.6 + state.reputation * 0.11);
+
+/**
+ * How many cars want to park here before the price enters the picture:
+ * the base demand of the location, shaped by daytime, reviews and equipment.
+ */
+export const attraction = (state: GameState): number => {
   const incidentPenalty = state.activeIncident && state.activeIncident.id !== 'payment' ? 0.8 : 1;
-  const reputationFactor = Math.max(0.25, 0.6 + state.reputation * 0.11);
-  return BASE_ATTRACTION * (1 + upgradeBonus) * incidentPenalty * reputationFactor * timeOfDayFactor(state.minuteOfDay);
+  return currentLocation(state).baseDemand * equipmentFactor(state) * incidentPenalty
+    * reputationFactor(state) * timeOfDayFactor(state.minuteOfDay);
 };
 
 /** Even a free lot only draws the guests that pass by – the catchment limit. */
@@ -168,13 +199,36 @@ export const targetReputation = (state: GameState): number => {
   return clamp(3.4 + upgradeBonus - congestion - (state.activeIncident ? 0.4 : 0), 1, 5);
 };
 
-/** Revenue per game hour: capacity × occupancy × price × payment rate. */
+/** Revenue per game hour: price × spaces × occupancy (max 100 %) × payment rate. */
 export const revenuePerHour = (state: GameState): number =>
-  state.occupancy * state.spaces * state.price * paymentRate(state);
+  state.price * state.spaces * state.occupancy * paymentRate(state);
 
-export const incomePerMinute = (state: GameState): number => revenuePerHour(state) / 60;
+/** Rent, upkeep of the spaces and everything that runs on staff or power. */
+export const fixedCostPerHour = (state: GameState): number => {
+  const running = (Object.keys(RUNNING_COST_PER_LEVEL) as UpgradeId[])
+    .reduce((total, id) => total + state.levels[id] * RUNNING_COST_PER_LEVEL[id], 0);
+  return currentLocation(state).rentPerHour + state.spaces * COST_PER_SPACE + running + paymentStage(state).costPerHour;
+};
 
-export const incomePerSecond = (state: GameState): number => incomePerMinute(state) * MINUTES_PER_SECOND;
+/** Itemised fixed costs, in the order the explanation modal lists them. */
+export const fixedCostItems = (state: GameState): { label: string; amount: number }[] => [
+  { label: `Miete ${currentLocation(state).name}`, amount: currentLocation(state).rentPerHour },
+  { label: `Fläche (${state.spaces} ${state.spaces === 1 ? 'Platz' : 'Plätze'})`, amount: state.spaces * COST_PER_SPACE },
+  { label: paymentStage(state).name, amount: paymentStage(state).costPerHour },
+  ...(Object.keys(RUNNING_COST_PER_LEVEL) as UpgradeId[])
+    .filter((id) => state.levels[id] * RUNNING_COST_PER_LEVEL[id] > 0)
+    .map((id) => ({
+      label: upgrades.find((upgrade) => upgrade.id === id)?.name ?? id,
+      amount: state.levels[id] * RUNNING_COST_PER_LEVEL[id],
+    })),
+].filter((item) => item.amount > 0);
+
+/** What actually stays: revenue minus the fixed costs. Can be negative. */
+export const profitPerHour = (state: GameState): number => revenuePerHour(state) - fixedCostPerHour(state);
+
+export const profitPerMinute = (state: GameState): number => profitPerHour(state) / 60;
+
+export const profitPerSecond = (state: GameState): number => profitPerMinute(state) * MINUTES_PER_SECOND;
 
 /** Time constants in real-time seconds. */
 const OCCUPANCY_TAU = 8;
@@ -206,9 +260,11 @@ export const advanceTime = (state: GameState, seconds: number): GameState => {
   // how finely the elapsed time is chopped up.
   const average = (before + next.occupancy) / 2;
 
-  const earned = incomePerMinute({ ...next, occupancy: average }) * minutes;
-  next.cash += earned;
-  next.lifetimeRevenue += earned;
+  const billed = { ...next, occupancy: average };
+  // The fixed costs run whether or not a single car shows up, but the account
+  // stops at zero – an empty till cannot go into debt.
+  next.cash = Math.max(0, next.cash + profitPerMinute(billed) * minutes);
+  next.lifetimeRevenue += revenuePerHour(billed) / 60 * minutes;
   next.carsServed += average * next.spaces * (minutes / 60) / AVERAGE_STAY_HOURS;
 
   next.reputation += (targetReputation(next) - next.reputation) * ease(seconds, REPUTATION_TAU);
@@ -267,6 +323,10 @@ export const buyUpgrade = (state: GameState, id: UpgradeId): GameState => {
   return next;
 };
 
+/** How the fixed costs per hour change when this upgrade is bought. */
+export const runningCostChange = (state: GameState, id: UpgradeId): number =>
+  fixedCostPerHour(buyUpgrade({ ...state, cash: Number.MAX_SAFE_INTEGER }, id)) - fixedCostPerHour(state);
+
 export const repairIncident = (state: GameState): GameState => {
   if (!state.activeIncident || state.cash < state.activeIncident.repairCost) return state;
   const incident = state.activeIncident;
@@ -292,13 +352,16 @@ export const maintenanceCost = (state: GameState): number => Math.round(35 + sta
 
 export const calculateOfflineProgress = (state: GameState, now: number): { state: GameState; earned: number; minutes: number } => {
   const elapsedMinutes = Math.max(0, Math.min(8 * 60, (now - state.lastSavedAt) / 60_000));
-  // Without supervision only the automated part of the till keeps working.
+  // Without supervision only the automated part of the till keeps working –
+  // the rent and the running costs are due either way.
   const unattendedFactor = 0.5 + state.levels.payment * 0.12;
   const occupancy = targetOccupancy(state);
-  const earned = occupancy * state.spaces * state.price * paymentRate(state) * (elapsedMinutes / 60) * unattendedFactor;
+  const settled = { ...state, occupancy };
+  const revenue = revenuePerHour(settled) * (elapsedMinutes / 60) * unattendedFactor;
+  const earned = revenue - fixedCostPerHour(settled) * (elapsedMinutes / 60);
   const next = structuredClone(state);
-  next.cash += earned;
-  next.lifetimeRevenue += earned;
+  next.cash = Math.max(0, next.cash + earned);
+  next.lifetimeRevenue += revenue;
   next.occupancy = occupancy;
   next.lastSavedAt = now;
   return { state: next, earned, minutes: elapsedMinutes };

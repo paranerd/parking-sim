@@ -5,8 +5,9 @@ import {
   AWAY_CAP_MINUTES,
   AwayReport,
   buyUpgrade,
-  currentLocation,
   attraction,
+  BASE_WILLINGNESS,
+  currentLocation,
   demand,
   equipmentFactor,
   fixedCostItems,
@@ -27,8 +28,7 @@ import {
   runningCostChange,
   simulateAway,
   simulateTick,
-  targetOccupancy,
-  timeOfDayFactor,
+  occupancy,
   turnedAwayShare,
   UpgradeCategory,
   UpgradeId,
@@ -64,7 +64,7 @@ const percent = (value: number): string => `${Math.round(value)}%`;
 const cars = (value: number): string => value.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 /** Cars currently standing on the lot – the continuous occupancy made visible. */
-const occupiedSpaces = (game: GameState): number => Math.round(game.occupancy * game.spaces);
+const occupiedSpaces = (game: GameState): number => Math.round(occupancy(game) * game.spaces);
 
 /** The next milestone: fill the lot, then move up to the next location. */
 const goal = (game: GameState): { title: string; progress: number; hint: string } => {
@@ -87,7 +87,7 @@ const marketHint = (game: GameState): string => {
   const turnedAway = turnedAwayShare(game);
   if (turnedAway > 0.15) return `${percent(turnedAway * 100)} der Gäste finden keinen Platz – du kannst mehr verlangen oder ausbauen`;
   if (turnedAway > 0.02) return `Ausgebucht – ${percent(turnedAway * 100)} finden keinen Platz und bewerten schlechter`;
-  if (targetOccupancy(game) < 0.65) return 'Viele Plätze bleiben leer – ein günstigerer Tarif holt mehr Gäste';
+  if (occupancy(game) < 0.65) return 'Viele Plätze bleiben leer – ein günstigerer Tarif holt mehr Gäste';
   return 'Angebot und Nachfrage sind im Gleichgewicht';
 };
 
@@ -133,7 +133,7 @@ const profitModal = (game: GameState): string => {
         <tr class="section"><th colspan="2">Umsatz</th></tr>
         <tr><td>Preis pro Stunde</td><td>${money(game.price)}</td></tr>
         <tr><td>Stellplätze</td><td>× ${game.spaces}</td></tr>
-        <tr><td>Nachfrage <em>(höchstens 100 %)</em></td><td>× ${percent(game.occupancy * 100)}</td></tr>
+        <tr><td>Nachfrage <em>(höchstens 100 %)</em></td><td>× ${percent(occupancy(game) * 100)}</td></tr>
         <tr><td>Zahlungsquote <em>(${paymentStage(game).name})</em></td><td>× ${percent(paymentRate(game) * 100)}</td></tr>
         <tr class="sum"><td>Umsatz pro Stunde</td><td>${money(revenue)}</td></tr>
         <tr class="section"><th colspan="2">Kosten</th></tr>
@@ -160,17 +160,17 @@ const demandModal = (game: GameState): string => {
       <table class="ledger">
         <tr class="section"><th colspan="2">So viele Gäste kommen zusammen</th></tr>
         <tr><td>Basis-Nachfrage <em>(${currentLocation(game).name})</em></td><td>${cars(currentLocation(game).baseDemand)} Autos</td></tr>
-        <tr><td>Tageszeit <em>(${clock(game.minuteOfDay)} Uhr)</em></td><td>× ${percent(timeOfDayFactor(game.minuteOfDay) * 100)}</td></tr>
         <tr><td>Bewertung <em>(${game.reputation.toFixed(1)} ★)</em></td><td>× ${percent(reputationFactor(game) * 100)}</td></tr>
         <tr><td>Werbung und Ausstattung</td><td>× ${percent(equipmentFactor(game) * 100)}</td></tr>
-        <tr><td>Preis <em>(${money(game.price)} zu ${money(willingnessToPay(game))} Zahlungsbereitschaft)</em></td><td>× ${percent(priceFactor * 100)}</td></tr>
+        <tr><td>Preis <em>(${money(game.price)} gegen ${money(willingnessToPay(game))} Zahlungsbereitschaft)</em></td><td>× ${percent(priceFactor * 100)}</td></tr>
         <tr class="sum"><td>Autos, die parken wollen</td><td>${cars(wanted)}</td></tr>
         <tr class="section"><th colspan="2">Auf ${game.spaces} ${game.spaces === 1 ? 'Stellplatz' : 'Stellplätzen'}</th></tr>
         <tr class="total"><td>Nachfrage <em>(höchstens 100 %)</em></td><td>${percent(Math.min(100, share))}</td></tr>
       </table>
+      <p class="note"><b>Zahlungsbereitschaft:</b> ${money(BASE_WILLINGNESS)} gelten als fairer Stundentarif; der Standort (${currentLocation(game).name} × ${currentLocation(game).willingnessFactor.toLocaleString('de-DE')}) und Ausstattung wie die Überdachung heben ihn an. Genau bei diesem Tarif liegt die Nachfrage bei 100 %, darüber fällt sie überproportional, darunter steigt sie – bis das Einzugsgebiet erschöpft ist.</p>
       <p class="note">${turnedAway > 0.02
         ? `Rechnerisch sind es ${percent(share)} – die überzähligen ${percent(turnedAway * 100)} finden keinen Platz, fahren weiter und bewerten schlechter. Mehr verlangen oder ausbauen.`
-        : 'Ein höherer Preis senkt die Nachfrage, ein niedrigerer hebt sie – bis das Einzugsgebiet des Standorts erschöpft ist.'}</p>
+        : 'Angebot und Nachfrage sind im Gleichgewicht.'}</p>
       <button data-action="close-demand">Verstanden</button>
     </div>
   </div>`;
@@ -186,25 +186,53 @@ const parkedCars = (game: GameState): string => {
   }).join('');
 };
 
-/** Selector of the focused control so keyboard focus survives a re-render. */
+/**
+ * Selector of the focused control, but only when it was reached by keyboard.
+ * Restoring focus after a mouse click would leave the clicked button looking
+ * pressed until the player clicks somewhere else.
+ */
 const focusedSelector = (): string | null => {
   const element = document.activeElement as HTMLElement | null;
-  if (!element || !app.contains(element)) return null;
+  if (!element || !app.contains(element) || !element.matches(':focus-visible')) return null;
   const key = (['priceStep', 'upgrade', 'action', 'filter'] as const).find((name) => element.dataset[name]);
   return key ? `[data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${element.dataset[key]}"]` : null;
 };
 
+/**
+ * Everything that changes the markup itself rather than just a number in it.
+ * As long as this stays the same, the DOM is left alone and only the live
+ * values are written – otherwise a click would land on a node that the next
+ * re-render has already replaced, and the browser swallows it.
+ */
+const structureKey = (): string => [
+  state.spaces, state.day, selectedCategory, muted, askReset, showProfitModal, showDemandModal, awayReport !== null,
+  state.activeIncident?.id ?? '-', state.price <= 0, occupiedSpaces(state),
+  Object.values(state.levels).join(','),
+  // Buttons flip between enabled and disabled as the cash passes their price.
+  upgrades.map((upgrade) => state.cash >= upgradeCost(upgrade, state.levels[upgrade.id])).join(''),
+  state.cash >= maintenanceCost(state), state.condition >= 99,
+  state.activeIncident ? state.cash >= state.activeIncident.repairCost : false,
+].join('|');
+
+let renderedKey = '';
+/** A press in progress freezes the DOM until the pointer is released. */
+let pointerHeld = false;
+let renderPending = false;
+
 const render = (): void => {
+  if (pointerHeld) {
+    renderPending = true;
+    return;
+  }
+  renderPending = false;
+  renderedKey = structureKey();
   const restoreFocus = focusedSelector();
-  const occupancy = state.occupancy * 100;
+  const filled = occupancy(state) * 100;
   const loss = profitPerHour(state) < 0;
   const wanted = demand(state);
   const demandShare = wanted / Math.max(1, state.spaces) * 100;
   const filtered = upgrades.filter((upgrade) => selectedCategory === 'Alle' || upgrade.category === selectedCategory);
   const nextGoal = goal(state);
-  // What the lot would make at this price once the occupancy has settled – it
-  // reacts to a price change immediately, unlike the gliding actual profit.
-  const projected = profitPerHour({ ...state, occupancy: targetOccupancy(state) });
 
   app.innerHTML = `
     <header class="topbar">
@@ -215,7 +243,7 @@ const render = (): void => {
           <strong data-live="cash">${money(state.cash)}</strong>
           <small class="${loss ? 'negative' : 'positive'}" data-live="rate-line"><b data-live="rate">${rate(state)}</b> / Std. <i>ⓘ</i></small>
         </button>
-        <div><span>AUSLASTUNG</span><strong data-live="occupancy">${percent(occupancy)}</strong></div>
+        <div><span>AUSLASTUNG</span><strong data-live="occupancy">${percent(filled)}</strong></div>
         <div><span>NACHFRAGE</span><strong data-live="demand">${percent(demandShare)}</strong></div>
       </div>
       <div class="header-actions">
@@ -251,36 +279,36 @@ const render = (): void => {
 
         <aside class="side-panel">
           <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
-          <div class="metric"><div><span>Auslastung</span><strong data-live="occupancy">${percent(occupancy)}</strong></div><div class="progress"><i data-live="occupancy-bar" style="width:${occupancy}%"></i></div><small><b data-live="capacity">${cars(state.occupancy * state.spaces)}</b> von ${state.spaces} ${state.spaces === 1 ? 'Platz' : 'Plätzen'} belegt</small></div>
+          <div class="metric"><div><span>Auslastung</span><strong data-live="occupancy">${percent(filled)}</strong></div><div class="progress"><i data-live="occupancy-bar" style="width:${filled}%"></i></div><small><b data-live="capacity">${cars(occupancy(state) * state.spaces)}</b> von ${state.spaces} ${state.spaces === 1 ? 'Platz' : 'Plätzen'} belegt</small></div>
           <div class="metric"><div><span>Nachfrage <button class="info-button" data-action="explain-demand" aria-haspopup="dialog" aria-label="Wie entsteht die Nachfrage?">i</button></span><strong data-live="demand">${percent(demandShare)}</strong></div><div class="progress ${demandShare > 100 ? 'amber' : ''}"><i data-live="demand-bar" style="width:${Math.min(100, demandShare)}%"></i></div><small><b data-live="demand-cars">${cars(wanted)}</b> Autos suchen einen Platz</small></div>
           <div class="market-hint ${turnedAwayShare(state) > 0.02 ? 'tight' : ''}" data-live="market-hint">${marketHint(state)}</div>
           <div class="price-setting">
-            <div class="price-head"><span id="price-label">PREIS / STD.</span><small>Bei diesem Tarif: <b class="${projected < 0 ? 'negative' : 'positive'}">${signedMoney(projected)}</b> / Std.</small></div>
+            <div class="price-head"><span id="price-label">PREIS / STD.</span><small>Gewinn <b class="${loss ? 'negative' : 'positive'}" data-live="rate">${rate(state)}</b> / Std.</small></div>
             <div class="price-stepper" role="group" aria-labelledby="price-label">
               <button type="button" class="coarse" data-price-step="-10" aria-label="Preis um ${money(PRICE_STEP * 10)} senken" ${state.price <= 0 ? 'disabled' : ''}>− ${money(PRICE_STEP * 10)}</button>
               <button type="button" data-price-step="-1" aria-label="Preis um ${money(PRICE_STEP)} senken" ${state.price <= 0 ? 'disabled' : ''}>−</button>
-              <strong aria-live="polite">${money(state.price)}</strong>
+              <strong aria-live="polite" data-live="price">${money(state.price)}</strong>
               <button type="button" data-price-step="1" aria-label="Preis um ${money(PRICE_STEP)} erhöhen">+</button>
               <button type="button" class="coarse" data-price-step="10" aria-label="Preis um ${money(PRICE_STEP * 10)} erhöhen">+ ${money(PRICE_STEP * 10)}</button>
             </div>
             <small class="price-hint">Gedrückt halten ändert den Preis fortlaufend</small>
           </div>
           <div class="quick-stats">
-            <div><span>BEWERTUNG</span><strong><b data-live="reputation">${state.reputation.toFixed(1)}</b> <em>★</em></strong><small>${Math.max(4, Math.floor(state.carsServed) + 14)} Rezensionen</small></div>
-            <div><span>ZAHLUNGSBEREITSCHAFT</span><strong>${money(willingnessToPay(state))}</strong><small>Tarif ohne Murren pro Stunde</small></div>
+            <div><span>BEWERTUNG</span><strong><b data-live="reputation">${state.reputation.toFixed(1)}</b> <em>★</em></strong><small><span data-live="reviews">${Math.max(4, Math.floor(state.carsServed) + 14)}</span> Rezensionen</small></div>
+            <div><span>ZAHLUNGSBEREITSCHAFT</span><strong>${money(willingnessToPay(state))}</strong><small>Referenztarif – darüber sinkt die Nachfrage</small></div>
             <div><span>ZAHLUNGSQUOTE</span><strong>${percent(paymentRate(state) * 100)}</strong><small>${paymentStage(state).name}</small></div>
           </div>
           <div class="condition">
-            <div><span>Anlagenzustand</span><strong>${percent(state.condition)}</strong></div>
-            <div class="progress amber"><i style="width:${state.condition}%"></i></div>
-            <button class="text-button" data-action="maintenance" ${state.cash < maintenanceCost(state) || state.condition >= 99 ? 'disabled' : ''}>Wartung durchführen · ${money(maintenanceCost(state))}</button>
+            <div><span>Anlagenzustand</span><strong data-live="condition">${percent(state.condition)}</strong></div>
+            <div class="progress amber"><i data-live="condition-bar" style="width:${state.condition}%"></i></div>
+            <button class="text-button" data-action="maintenance" ${state.cash < maintenanceCost(state) || state.condition >= 99 ? 'disabled' : ''}>Wartung durchführen · <span data-live="maintenance">${money(maintenanceCost(state))}</span></button>
           </div>
           ${state.activeIncident ? `<div class="incident"><div class="incident-icon">!</div><div><strong>${state.activeIncident.title}</strong><p>${state.activeIncident.description}</p><button data-action="repair" ${state.cash < state.activeIncident.repairCost ? 'disabled' : ''}>Jetzt reparieren · ${money(state.activeIncident.repairCost)}</button></div></div>` : `<div class="all-good"><span>✓</span><div><strong>Alles läuft rund</strong><small>Keine offenen Störungen</small></div></div>`}
           <div class="quick-stats bottom">
             <div><span>FIXKOSTEN / STD.</span><strong>− ${money(fixedCostPerHour(state))}</strong><small>Miete, Fläche, Personal</small></div>
             <div><span>GEWINN / STD.</span><strong class="${loss ? 'negative' : 'positive'}" data-live="hourly">${signedMoney(profitPerHour(state))}</strong><small><button class="text-button" data-action="explain-profit">Wie kommt das zustande?</button></small></div>
           </div>
-          <div class="next-goal"><span>NÄCHSTES ZIEL</span><div><strong>${nextGoal.title}</strong><b>${Math.round(nextGoal.progress)}%</b></div><div class="progress dark"><i style="width:${nextGoal.progress}%"></i></div><small>${nextGoal.hint}</small></div>
+          <div class="next-goal"><span>NÄCHSTES ZIEL</span><div><strong>${nextGoal.title}</strong><b data-live="goal">${Math.round(nextGoal.progress)}%</b></div><div class="progress dark"><i data-live="goal-bar" style="width:${nextGoal.progress}%"></i></div><small>${nextGoal.hint}</small></div>
         </aside>
       </section>
 
@@ -344,7 +372,7 @@ const startHold = (steps: number): void => {
     state = adjustHourlyPrice(state, steps);
     if (state.price === before) return stopHold();
     repeated = true;
-    render();
+    renderLiveValues();
     delay = Math.max(45, delay * 0.72);
     holdTimer = window.setTimeout(repeat, delay);
   };
@@ -352,12 +380,19 @@ const startHold = (steps: number): void => {
 };
 
 app.addEventListener('pointerdown', (event) => {
+  pointerHeld = true;
   const button = (event.target as HTMLElement).closest<HTMLElement>('[data-price-step]');
   if (button && !(button as HTMLButtonElement).disabled) startHold(Number(button.dataset.priceStep));
 });
-document.addEventListener('pointerup', stopHold);
-document.addEventListener('pointercancel', stopHold);
-window.addEventListener('blur', stopHold);
+
+const releasePointer = (): void => {
+  stopHold();
+  pointerHeld = false;
+  if (renderPending) render();
+};
+document.addEventListener('pointerup', releasePointer);
+document.addEventListener('pointercancel', releasePointer);
+window.addEventListener('blur', releasePointer);
 
 app.addEventListener('click', (event) => {
   const target = (event.target as HTMLElement).closest<HTMLElement>('button, a');
@@ -421,11 +456,11 @@ const renderLiveValues = (): void => {
     node.classList.toggle('positive', !loss);
   });
 
-  const occupancy = state.occupancy * 100;
-  setLive('occupancy', percent(occupancy));
-  setLive('capacity', cars(state.occupancy * state.spaces));
+  const filled = occupancy(state) * 100;
+  setLive('occupancy', percent(filled));
+  setLive('capacity', cars(occupancy(state) * state.spaces));
   const occupancyBar = app.querySelector<HTMLElement>('[data-live="occupancy-bar"]');
-  if (occupancyBar) occupancyBar.style.width = `${occupancy}%`;
+  if (occupancyBar) occupancyBar.style.width = `${filled}%`;
 
   const wanted = demand(state);
   const demandShare = wanted / Math.max(1, state.spaces) * 100;
@@ -436,6 +471,18 @@ const renderLiveValues = (): void => {
     demandBar.style.width = `${Math.min(100, demandShare)}%`;
     demandBar.parentElement?.classList.toggle('amber', demandShare > 100);
   }
+
+  setLive('price', money(state.price));
+  setLive('maintenance', money(maintenanceCost(state)));
+  setLive('reviews', String(Math.max(4, Math.floor(state.carsServed) + 14)));
+  setLive('condition', percent(state.condition));
+  const conditionBar = app.querySelector<HTMLElement>('[data-live="condition-bar"]');
+  if (conditionBar) conditionBar.style.width = `${state.condition}%`;
+
+  const nextGoal = goal(state);
+  setLive('goal', `${Math.round(nextGoal.progress)}%`);
+  const goalBar = app.querySelector<HTMLElement>('[data-live="goal-bar"]');
+  if (goalBar) goalBar.style.width = `${nextGoal.progress}%`;
 
   const hint = app.querySelector<HTMLElement>('[data-live="market-hint"]');
   if (hint) {
@@ -472,14 +519,14 @@ const step = (now = performance.now()): void => {
 
   state = advanceTime(state, elapsed);
   pendingTicks += elapsed;
-  let ticked = false;
   while (pendingTicks >= 1) {
     pendingTicks -= 1;
     state = simulateTick(state);
-    ticked = true;
   }
 
-  if (ticked) render();
+  // Rebuild the DOM only when the markup really changes; the rest is written
+  // into the existing nodes.
+  if (structureKey() !== renderedKey) render();
   else renderLiveValues();
 };
 

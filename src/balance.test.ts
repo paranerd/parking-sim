@@ -10,7 +10,7 @@ import {
   revenuePerHour,
   setHourlyPrice,
   simulateTick,
-  targetOccupancy,
+  occupancy,
   UpgradeId,
   upgradeCost,
   upgrades,
@@ -19,7 +19,7 @@ import {
 /** Profit the state settles on once it is priced at the market and filled up. */
 const settledIncome = (state: GameState): number => {
   const priced = setHourlyPrice(state, Math.max(0.1, marketPrice(state)));
-  return profitPerSecond({ ...priced, occupancy: targetOccupancy(priced) });
+  return profitPerSecond(priced);
 };
 
 /**
@@ -66,7 +66,7 @@ describe('balance', () => {
     expect(after.levels.payment).toBeGreaterThan(0);
     // The fixed costs stay a real but payable share of the revenue.
     expect(fixedCostPerHour(after)).toBeGreaterThan(1);
-    expect(fixedCostPerHour(after)).toBeLessThan(revenuePerHour({ ...after, occupancy: targetOccupancy(after) }));
+    expect(fixedCostPerHour(after)).toBeLessThan(revenuePerHour(after));
   });
 
   it('moves the optimal price as the lot grows', () => {

@@ -2,6 +2,8 @@ import './styles.scss';
 import {
   adjustHourlyPrice,
   advanceTime,
+  AWAY_CAP_MINUTES,
+  AwayReport,
   buyUpgrade,
   currentLocation,
   attraction,
@@ -19,11 +21,11 @@ import {
   performMaintenance,
   PRICE_STEP,
   profitPerHour,
-  profitPerSecond,
   reputationFactor,
   repairIncident,
   revenuePerHour,
   runningCostChange,
+  simulateAway,
   simulateTick,
   targetOccupancy,
   timeOfDayFactor,
@@ -41,18 +43,22 @@ if (!app) throw new Error('App container not found');
 
 const categories: (UpgradeCategory | 'Alle')[] = ['Alle', 'Standort', 'Kapazität', 'Nachfrage', 'Erlös'];
 
+/** Absences shorter than this are booked silently. */
+const AWAY_MODAL_MINUTES = 60;
+
 const loaded = loadGame();
 let state = loaded.state;
+/** Report of the last absence, shown as a modal while it is set. */
+let awayReport: AwayReport | null = loaded.away && loaded.away.awayMinutes >= AWAY_MODAL_MINUTES ? loaded.away : null;
 let selectedCategory: UpgradeCategory | 'Alle' = 'Alle';
 let muted = false;
-let showOfflineModal = Math.abs(loaded.offlineEarned) > 0.05;
 let askReset = false;
 let showProfitModal = false;
 let showDemandModal = false;
 
 const money = (value: number): string => `${value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 const signedMoney = (value: number): string => `${value < 0 ? '−' : '+'} ${money(Math.abs(value))}`;
-const rate = (game: GameState): string => signedMoney(profitPerSecond(game));
+const rate = (game: GameState): string => signedMoney(profitPerHour(game));
 const clock = (minutes: number): string => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
 const percent = (value: number): string => `${Math.round(value)}%`;
 const cars = (value: number): string => value.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -85,6 +91,35 @@ const marketHint = (game: GameState): string => {
   return 'Angebot und Nachfrage sind im Gleichgewicht';
 };
 
+/** How long the player was gone, in plain words. */
+const duration = (minutes: number): string => {
+  const hours = Math.floor(minutes / 60);
+  const rest = Math.round(minutes % 60);
+  if (hours === 0) return `${Math.max(1, rest)} Minuten`;
+  return rest === 0 ? `${hours} Stunden` : `${hours} Std. ${rest} Min.`;
+};
+
+/** What happened while nobody was watching. */
+const awayModal = (report: AwayReport): string => `<div class="modal-backdrop" id="away-modal">
+  <div class="modal wide">
+    <span class="modal-icon ${report.earned < 0 ? 'warn' : ''}">${report.earned < 0 ? '!' : '☀'}</span>
+    <span class="eyebrow">WILLKOMMEN ZURÜCK</span>
+    <h2 class="${report.earned < 0 ? 'negative' : ''}">${report.earned < 0 ? 'Die Kosten liefen weiter.' : 'Dein Parkplatz hat weitergearbeitet.'}</h2>
+    <p>Du warst ${report.capped ? `mehr als ${AWAY_CAP_MINUTES / 60} Stunden` : duration(report.awayMinutes)} weg${report.capped ? ` – angerechnet werden die letzten ${AWAY_CAP_MINUTES / 60} Stunden` : ''}. In der Zeit vergingen ${Math.round(report.gameHours)} Spielstunden.</p>
+    <table class="ledger">
+      <tr><td>Umsatz <em>(${percent(report.attendedShare * 100)} ohne Aufsicht kassiert)</em></td><td>${money(report.revenue)}</td></tr>
+      <tr><td>Kosten <em>(Miete, Fläche, Personal)</em></td><td>${money(report.costs)}</td></tr>
+      <tr class="total"><td>${report.earned < 0 ? 'Verlust' : 'Gewinn'}</td><td class="${report.earned < 0 ? 'negative' : ''}">${signedMoney(report.earned)}</td></tr>
+      <tr class="section"><th colspan="2">Was sonst passiert ist</th></tr>
+      <tr><td>Vergangene Spieltage</td><td>${report.gameDays}</td></tr>
+      <tr><td>Bediente Autos</td><td>${Math.round(report.cars)}</td></tr>
+      <tr><td>Auslastung</td><td>${percent(report.occupancy * 100)}</td></tr>
+    </table>
+    ${report.earned < 0 ? '<p class="note">Miete und laufende Kosten fallen auch ohne Gäste an. Ein besserer Tarif oder weniger Leerstand hilft.</p>' : ''}
+    <button data-action="close-away">Weiterbauen</button>
+  </div>
+</div>`;
+
 /** Revenue, costs and what stays – one line per factor. */
 const profitModal = (game: GameState): string => {
   const revenue = revenuePerHour(game);
@@ -93,7 +128,7 @@ const profitModal = (game: GameState): string => {
   return `<div class="modal-backdrop" id="profit-modal">
     <div class="modal wide">
       <span class="eyebrow">BILANZ</span>
-      <h2 class="${profit < 0 ? 'negative' : 'positive'}">${signedMoney(profitPerSecond(game))} pro Sekunde</h2>
+      <h2 class="${profit < 0 ? 'negative' : 'positive'}">${signedMoney(profit)} pro Stunde</h2>
       <table class="ledger">
         <tr class="section"><th colspan="2">Umsatz</th></tr>
         <tr><td>Preis pro Stunde</td><td>${money(game.price)}</td></tr>
@@ -105,8 +140,7 @@ const profitModal = (game: GameState): string => {
         ${fixedCostItems(game).map((item) => `<tr><td>${item.label}</td><td>${money(item.amount)}</td></tr>`).join('')}
         <tr class="sum"><td>Kosten pro Stunde</td><td>${money(costs)}</td></tr>
         <tr class="section"><th colspan="2">Gewinn</th></tr>
-        <tr><td>${money(revenue)} Umsatz − ${money(costs)} Kosten</td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profit)}</td></tr>
-        <tr class="total"><td>Gewinn pro Sekunde <em>(1 Sek. = ${MINUTES_PER_SECOND} Spielminuten)</em></td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profitPerSecond(game))}</td></tr>
+        <tr class="total"><td>${money(revenue)} Umsatz − ${money(costs)} Kosten <em>(eine Spielstunde dauert ${Math.round(60 / MINUTES_PER_SECOND)} Sekunden)</em></td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profit)}</td></tr>
       </table>
       <button data-action="close-profit">Verstanden</button>
     </div>
@@ -168,6 +202,9 @@ const render = (): void => {
   const demandShare = wanted / Math.max(1, state.spaces) * 100;
   const filtered = upgrades.filter((upgrade) => selectedCategory === 'Alle' || upgrade.category === selectedCategory);
   const nextGoal = goal(state);
+  // What the lot would make at this price once the occupancy has settled – it
+  // reacts to a price change immediately, unlike the gliding actual profit.
+  const projected = profitPerHour({ ...state, occupancy: targetOccupancy(state) });
 
   app.innerHTML = `
     <header class="topbar">
@@ -176,7 +213,7 @@ const render = (): void => {
         <button class="cash-stat" data-action="explain-profit" aria-haspopup="dialog" title="Wie kommt der Gewinn zustande?">
           <span>KONTOSTAND</span>
           <strong data-live="cash">${money(state.cash)}</strong>
-          <small class="${loss ? 'negative' : 'positive'}" data-live="rate-line"><b data-live="rate">${rate(state)}</b> / Sek. <i>ⓘ</i></small>
+          <small class="${loss ? 'negative' : 'positive'}" data-live="rate-line"><b data-live="rate">${rate(state)}</b> / Std. <i>ⓘ</i></small>
         </button>
         <div><span>AUSLASTUNG</span><strong data-live="occupancy">${percent(occupancy)}</strong></div>
         <div><span>NACHFRAGE</span><strong data-live="demand">${percent(demandShare)}</strong></div>
@@ -217,16 +254,18 @@ const render = (): void => {
           <div class="metric"><div><span>Auslastung</span><strong data-live="occupancy">${percent(occupancy)}</strong></div><div class="progress"><i data-live="occupancy-bar" style="width:${occupancy}%"></i></div><small><b data-live="capacity">${cars(state.occupancy * state.spaces)}</b> von ${state.spaces} ${state.spaces === 1 ? 'Platz' : 'Plätzen'} belegt</small></div>
           <div class="metric"><div><span>Nachfrage <button class="info-button" data-action="explain-demand" aria-haspopup="dialog" aria-label="Wie entsteht die Nachfrage?">i</button></span><strong data-live="demand">${percent(demandShare)}</strong></div><div class="progress ${demandShare > 100 ? 'amber' : ''}"><i data-live="demand-bar" style="width:${Math.min(100, demandShare)}%"></i></div><small><b data-live="demand-cars">${cars(wanted)}</b> Autos suchen einen Platz</small></div>
           <div class="market-hint ${turnedAwayShare(state) > 0.02 ? 'tight' : ''}" data-live="market-hint">${marketHint(state)}</div>
-          <div class="quick-stats">
-            <div class="price-setting">
-              <span id="price-label">PREIS / STD.</span>
-              <div class="price-stepper" role="group" aria-labelledby="price-label">
-                <button type="button" data-price-step="-1" aria-label="Preis um ${money(PRICE_STEP)} senken" ${state.price <= 0 ? 'disabled' : ''}>−</button>
-                <strong aria-live="polite">${money(state.price)}</strong>
-                <button type="button" data-price-step="1" aria-label="Preis um ${money(PRICE_STEP)} erhöhen">+</button>
-              </div>
-              <small>Gewinn <b class="${loss ? 'negative' : 'positive'}" data-live="rate">${rate(state)}</b> / Sek.</small>
+          <div class="price-setting">
+            <div class="price-head"><span id="price-label">PREIS / STD.</span><small>Bei diesem Tarif: <b class="${projected < 0 ? 'negative' : 'positive'}">${signedMoney(projected)}</b> / Std.</small></div>
+            <div class="price-stepper" role="group" aria-labelledby="price-label">
+              <button type="button" class="coarse" data-price-step="-10" aria-label="Preis um ${money(PRICE_STEP * 10)} senken" ${state.price <= 0 ? 'disabled' : ''}>− ${money(PRICE_STEP * 10)}</button>
+              <button type="button" data-price-step="-1" aria-label="Preis um ${money(PRICE_STEP)} senken" ${state.price <= 0 ? 'disabled' : ''}>−</button>
+              <strong aria-live="polite">${money(state.price)}</strong>
+              <button type="button" data-price-step="1" aria-label="Preis um ${money(PRICE_STEP)} erhöhen">+</button>
+              <button type="button" class="coarse" data-price-step="10" aria-label="Preis um ${money(PRICE_STEP * 10)} erhöhen">+ ${money(PRICE_STEP * 10)}</button>
             </div>
+            <small class="price-hint">Gedrückt halten ändert den Preis fortlaufend</small>
+          </div>
+          <div class="quick-stats">
             <div><span>BEWERTUNG</span><strong><b data-live="reputation">${state.reputation.toFixed(1)}</b> <em>★</em></strong><small>${Math.max(4, Math.floor(state.carsServed) + 14)} Rezensionen</small></div>
             <div><span>ZAHLUNGSBEREITSCHAFT</span><strong>${money(willingnessToPay(state))}</strong><small>Tarif ohne Murren pro Stunde</small></div>
             <div><span>ZAHLUNGSQUOTE</span><strong>${percent(paymentRate(state) * 100)}</strong><small>${paymentStage(state).name}</small></div>
@@ -275,16 +314,7 @@ const render = (): void => {
       <button class="restart-button" data-action="ask-reset">Spiel neu starten</button>
       <span>SPIELSTAND AUTOMATISCH GESPEICHERT</span>
     </footer>
-    ${showOfflineModal ? `<div class="modal-backdrop" id="offline-modal"><div class="modal">
-      <span class="modal-icon ${loaded.offlineEarned < 0 ? 'warn' : ''}">${loaded.offlineEarned < 0 ? '!' : '☀'}</span>
-      <span class="eyebrow">WILLKOMMEN ZURÜCK</span>
-      <h2>${loaded.offlineEarned < 0 ? 'Die Fixkosten liefen weiter.' : 'Dein Parkplatz war fleißig.'}</h2>
-      <p>${loaded.offlineEarned < 0
-        ? `In ${Math.round(loaded.offlineMinutes)} Minuten Abwesenheit haben Miete und laufende Kosten mehr gekostet, als hereinkam.`
-        : `Während deiner Abwesenheit von ${Math.round(loaded.offlineMinutes)} Minuten wurden Einnahmen erzielt.`}</p>
-      <strong class="${loaded.offlineEarned < 0 ? 'negative' : ''}">${signedMoney(loaded.offlineEarned)}</strong>
-      <button data-action="close-modal">Weiterbauen</button>
-    </div></div>` : ''}
+    ${awayReport ? awayModal(awayReport) : ''}
     ${showProfitModal ? profitModal(state) : ''}
     ${showDemandModal ? demandModal(state) : ''}
     ${askReset ? `<div class="modal-backdrop" id="reset-modal"><div class="modal"><span class="modal-icon warn">↻</span><span class="eyebrow">NEU STARTEN</span><h2>Wirklich von vorn beginnen?</h2><p>Dein Spielstand von Tag ${state.day} mit ${state.spaces} ${state.spaces === 1 ? 'Stellplatz' : 'Stellplätzen'} und ${money(state.cash)} wird endgültig gelöscht.</p><div class="modal-actions"><button class="ghost" data-action="cancel-reset">Abbrechen</button><button data-action="confirm-reset">Ja, neu starten</button></div></div></div>` : ''}
@@ -292,6 +322,42 @@ const render = (): void => {
 
   if (restoreFocus) app.querySelector<HTMLElement>(restoreFocus)?.focus();
 };
+
+/**
+ * Holding a price button keeps changing the price and speeds up, so a few euros
+ * are one long press instead of forty clicks. The click handler still does a
+ * single step, which keeps the buttons usable from the keyboard.
+ */
+let holdTimer: number | undefined;
+let repeated = false;
+
+const stopHold = (): void => {
+  window.clearTimeout(holdTimer);
+  holdTimer = undefined;
+};
+
+const startHold = (steps: number): void => {
+  stopHold();
+  let delay = 380;
+  const repeat = (): void => {
+    const before = state.price;
+    state = adjustHourlyPrice(state, steps);
+    if (state.price === before) return stopHold();
+    repeated = true;
+    render();
+    delay = Math.max(45, delay * 0.72);
+    holdTimer = window.setTimeout(repeat, delay);
+  };
+  holdTimer = window.setTimeout(repeat, delay);
+};
+
+app.addEventListener('pointerdown', (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLElement>('[data-price-step]');
+  if (button && !(button as HTMLButtonElement).disabled) startHold(Number(button.dataset.priceStep));
+});
+document.addEventListener('pointerup', stopHold);
+document.addEventListener('pointercancel', stopHold);
+window.addEventListener('blur', stopHold);
 
 app.addEventListener('click', (event) => {
   const target = (event.target as HTMLElement).closest<HTMLElement>('button, a');
@@ -302,14 +368,13 @@ app.addEventListener('click', (event) => {
   const priceStep = target.dataset.priceStep;
   if (filter) selectedCategory = filter;
   if (upgrade) state = buyUpgrade(state, upgrade);
-  if (priceStep) state = adjustHourlyPrice(state, Number(priceStep));
+  // A click after a hold would add one step on top of the repeats.
+  if (priceStep && !repeated) state = adjustHourlyPrice(state, Number(priceStep));
+  repeated = false;
   if (target.dataset.action === 'repair') state = repairIncident(state);
   if (target.dataset.action === 'maintenance') state = performMaintenance(state);
   if (target.dataset.action === 'mute') muted = !muted;
-  if (target.dataset.action === 'close-modal') {
-    showOfflineModal = false;
-    document.querySelector('#offline-modal')?.remove();
-  }
+  if (target.dataset.action === 'close-away') awayReport = null;
   if (target.dataset.action === 'explain-profit') showProfitModal = true;
   if (target.dataset.action === 'close-profit') showProfitModal = false;
   if (target.dataset.action === 'explain-demand') showDemandModal = true;
@@ -317,7 +382,7 @@ app.addEventListener('click', (event) => {
   if (target.dataset.action === 'ask-reset') askReset = true;
   if (target.dataset.action === 'cancel-reset') askReset = false;
   if (target.dataset.action === 'confirm-reset') restartGame();
-  if (target.dataset.action !== 'close-modal') render();
+  render();
 });
 
 /** Wipes the save and starts a brand new parking lot without a page reload. */
@@ -326,7 +391,7 @@ const restartGame = (): void => {
   state = { ...structuredClone(INITIAL_STATE), lastSavedAt: Date.now() };
   selectedCategory = 'Alle';
   askReset = false;
-  showOfflineModal = false;
+  awayReport = null;
   showProfitModal = false;
   showDemandModal = false;
   lastStep = performance.now();
@@ -381,12 +446,29 @@ const renderLiveValues = (): void => {
 
 let lastStep = performance.now();
 let pendingTicks = 0;
+let hiddenSince = 0;
+
+/** Gaps longer than this are booked as an absence instead of simulated live. */
+const AWAY_THRESHOLD_SECONDS = 45;
+
+/** Books an absence and offers the report if it was a long one. */
+const bookAway = (seconds: number): void => {
+  const report = simulateAway(state, seconds / 60);
+  state = report.state;
+  if (report.awayMinutes >= AWAY_MODAL_MINUTES) awayReport = report;
+  saveGame(state);
+  render();
+};
 
 /** Books the elapsed real time; income accrues per frame, events once per second. */
 const step = (now = performance.now()): void => {
-  const elapsed = Math.min(2, Math.max(0, (now - lastStep) / 1000));
+  // While the tab is hidden the browser throttles everything; that time is
+  // settled in one go when the player comes back.
+  if (document.hidden) return;
+  const elapsed = Math.max(0, (now - lastStep) / 1000);
   lastStep = now;
   if (elapsed <= 0) return;
+  if (elapsed > AWAY_THRESHOLD_SECONDS) return bookAway(elapsed);
 
   state = advanceTime(state, elapsed);
   pendingTicks += elapsed;
@@ -400,6 +482,18 @@ const step = (now = performance.now()): void => {
   if (ticked) render();
   else renderLiveValues();
 };
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    hiddenSince = Date.now();
+    saveGame(state);
+    return;
+  }
+  const away = (Date.now() - hiddenSince) / 1000;
+  lastStep = performance.now();
+  pendingTicks = 0;
+  if (hiddenSince && away > AWAY_THRESHOLD_SECONDS) bookAway(away);
+});
 
 render();
 

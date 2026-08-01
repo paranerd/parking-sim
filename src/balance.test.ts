@@ -53,25 +53,27 @@ const play = (minutes: number): GameState => {
 };
 
 describe('balance', () => {
-  it('keeps a reasonable player growing for an hour', () => {
+  it('keeps a reasonable player moving in real time', () => {
     const start = structuredClone(INITIAL_STATE);
-    const after = play(60);
 
-    expect(settledIncome(after)).toBeGreaterThan(settledIncome(start) * 10);
-    expect(after.lifetimeRevenue).toBeGreaterThan(300);
-    // Growth comes from every lever, not from capacity alone.
-    expect(after.levels.location).toBeGreaterThan(0);
-    expect(after.spaces).toBeGreaterThan(8);
-    expect(after.levels.advertising + after.levels.lighting + after.levels.cleaning).toBeGreaterThan(2);
-    expect(after.levels.payment).toBeGreaterThan(0);
+    // Game time is real time now, so an hour of play is an hour of operation:
+    // enough for the first expansion, not yet for a move.
+    const hour = play(60);
+    expect(hour.spaces).toBeGreaterThan(start.spaces);
+    expect(settledIncome(hour)).toBeGreaterThan(settledIncome(start));
+
+    // Two hours in, the payment system is affordable and clearly pays off.
+    const twoHours = play(120);
+    expect(twoHours.levels.payment).toBeGreaterThan(0);
+    expect(settledIncome(twoHours)).toBeGreaterThan(settledIncome(start) * 1.4);
     // The fixed costs stay a real but payable share of the revenue.
-    expect(fixedCostPerHour(after)).toBeGreaterThan(1);
-    expect(fixedCostPerHour(after)).toBeLessThan(revenuePerHour(after));
+    expect(fixedCostPerHour(twoHours)).toBeGreaterThan(1);
+    expect(fixedCostPerHour(twoHours)).toBeLessThan(revenuePerHour(twoHours));
   });
 
   it('moves the optimal price as the lot grows', () => {
     const early = structuredClone(INITIAL_STATE);
-    const late = play(30);
+    const late = play(120);
     expect(Math.abs(marketPrice(late) - marketPrice(early))).toBeGreaterThan(0.1);
   });
 });

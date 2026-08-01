@@ -16,7 +16,6 @@ import {
   INITIAL_STATE,
   LOCATIONS,
   maintenanceCost,
-  MINUTES_PER_SECOND,
   paymentRate,
   paymentStage,
   performMaintenance,
@@ -71,7 +70,7 @@ const goal = (game: GameState): { title: string; progress: number; hint: string 
   const next = upgrades.find((upgrade) => upgrade.id === 'location');
   const level = game.levels.location;
   if (!next || level >= (next.maxLevel ?? 0)) {
-    return { title: 'Flughafen ausbauen', progress: Math.min(100, game.spaces / 120 * 100), hint: `${game.spaces} von 120 Stellplätzen am besten Standort` };
+    return { title: 'Flughafen ausbauen', progress: Math.min(100, game.spaces / 1000 * 100), hint: `${game.spaces} von 1.000 Stellplätzen am besten Standort` };
   }
   const cost = upgradeCost(next, level);
   const target = LOCATIONS[level + 1].name;
@@ -140,7 +139,7 @@ const profitModal = (game: GameState): string => {
         ${fixedCostItems(game).map((item) => `<tr><td>${item.label}</td><td>${money(item.amount)}</td></tr>`).join('')}
         <tr class="sum"><td>Kosten pro Stunde</td><td>${money(costs)}</td></tr>
         <tr class="section"><th colspan="2">Gewinn</th></tr>
-        <tr class="total"><td>${money(revenue)} Umsatz − ${money(costs)} Kosten <em>(eine Spielstunde dauert ${Math.round(60 / MINUTES_PER_SECOND)} Sekunden)</em></td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profit)}</td></tr>
+        <tr class="total"><td>${money(revenue)} Umsatz − ${money(costs)} Kosten <em>(Spielzeit läuft in Echtzeit – eine Stunde ist eine Stunde)</em></td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profit)}</td></tr>
       </table>
       <button data-action="close-profit">Verstanden</button>
     </div>
@@ -176,14 +175,19 @@ const demandModal = (game: GameState): string => {
   </div>`;
 };
 
-const parkedCars = (game: GameState): string => {
-  const occupied = occupiedSpaces(game);
-  return Array.from({ length: game.spaces }, (_, index) => {
+/** Beyond this the lot is drawn as a sample plus a count. */
+const MAX_DRAWN_SPACES = 60;
+
+const parkedCars = (game: GameState): { grid: string; columns: number; hidden: number } => {
+  const shown = Math.min(game.spaces, MAX_DRAWN_SPACES);
+  const columns = Math.max(5, Math.ceil(Math.sqrt(shown * 2.6)));
+  const occupied = Math.round(occupancy(game) * shown);
+  const colors = ['blue', 'cream', 'orange', 'green', 'purple'];
+  const grid = Array.from({ length: shown }, (_, index) => {
     const taken = index < occupied;
-    const colors = ['blue', 'cream', 'orange', 'green', 'purple'];
-    const color = colors[index % colors.length];
-    return `<div class="parking-space ${taken ? 'occupied' : ''}"><span>${index + 1}</span>${taken ? `<div class="car ${color}"><i></i><b></b></div>` : ''}</div>`;
+    return `<div class="parking-space ${taken ? 'occupied' : ''}">${shown <= 30 ? `<span>${index + 1}</span>` : ''}${taken ? `<div class="car ${colors[index % colors.length]}"><i></i><b></b></div>` : ''}</div>`;
   }).join('');
+  return { grid, columns, hidden: game.spaces - shown };
 };
 
 /**
@@ -233,6 +237,7 @@ const render = (): void => {
   const demandShare = wanted / Math.max(1, state.spaces) * 100;
   const filtered = upgrades.filter((upgrade) => selectedCategory === 'Alle' || upgrade.category === selectedCategory);
   const nextGoal = goal(state);
+  const lot = parkedCars(state);
 
   app.innerHTML = `
     <header class="topbar">
@@ -265,7 +270,8 @@ const render = (): void => {
             <div class="road road-top"><span>BUS</span><i></i><i></i></div>
             <div class="lot">
               <div class="lot-sign"><b>P</b><span>PARKEN<br>FREI</span></div>
-              <div class="spaces">${parkedCars(state)}</div>
+              <div class="spaces" style="grid-template-columns: repeat(${lot.columns}, 1fr)">${lot.grid}</div>
+              ${lot.hidden > 0 ? `<div class="lot-more">+ ${lot.hidden} weitere Plätze</div>` : ''}
               <div class="gate"><span></span><i></i></div>
               <div class="booth"><b>P</b><i></i></div>
             </div>

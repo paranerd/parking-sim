@@ -6,6 +6,7 @@ import {
   buyUpgrade,
   calculateOfflineProgress,
   demand,
+  earningPower,
   demandAt,
   GameState,
   currentLocation,
@@ -18,12 +19,14 @@ import {
   MINUTES_PER_SECOND,
   paymentRate,
   paymentStage,
+  possibleIncidents,
   performMaintenance,
   PRICE_STEP,
   repairIncident,
   profitPerHour,
   profitPerSecond,
   revenuePerHour,
+  simulateAway,
   simulateTick,
   targetOccupancy,
   targetReputation,
@@ -349,16 +352,75 @@ describe('maintenance and incidents', () => {
   });
 });
 
-describe('offline progress', () => {
+describe('incidents only hit what exists', () => {
+  const breakSomething = (state: GameState): GameState =>
+    simulateTick({ ...state, condition: 70, incidentCooldown: 0 }, vi.fn().mockReturnValue(0));
+
+  it('never breaks a toilet that was never built', () => {
+    const bare = freshState();
+    expect(possibleIncidents(bare)).toEqual(['surface']);
+    expect(breakSomething(bare).activeIncident?.id).toBe('surface');
+
+    const equipped = withLevel(withLevel(bare, 'cleaning', 1), 'payment', 1);
+    expect(possibleIncidents(equipped)).toContain('cleaning');
+    expect(possibleIncidents(equipped)).toContain('payment');
+  });
+
+  it('prices a repair in hours of takings, not in a fixed sum', () => {
+    const small = breakSomething(freshState());
+    expect(small.activeIncident!.repairCost).toBeLessThan(5);
+    expect(small.activeIncident!.repairCost).toBeGreaterThan(0);
+
+    const big = breakSomething({ ...freshState(), spaces: 30, levels: { ...INITIAL_STATE.levels, location: 2, spaces: 29 } });
+    expect(big.activeIncident!.repairCost).toBeGreaterThan(small.activeIncident!.repairCost * 20);
+    // Still affordable: about an hour or two of what the lot can take in.
+    expect(big.activeIncident!.repairCost).toBeLessThan(earningPower(big) * 3);
+  });
+
+  it('scales maintenance with the lot instead of a flat fee', () => {
+    const small = freshState();
+    expect(maintenanceCost(small)).toBeLessThan(5);
+    expect(maintenanceCost({ ...small, spaces: 30 })).toBeGreaterThan(maintenanceCost(small));
+  });
+});
+
+describe('away progress', () => {
+  it('counts absence on the same clock as playing', () => {
+    const state = { ...freshState(), spaces: 4, occupancy: 1 };
+    // One real minute is MINUTES_PER_SECOND * 60 game minutes.
+    const report = simulateAway(state, 1);
+    expect(report.gameHours).toBeCloseTo(2, 6);
+    expect(report.revenue).toBeGreaterThan(0);
+    expect(report.state.day).toBe(state.day);
+    expect(report.state.minuteOfDay).toBeCloseTo(state.minuteOfDay + 120, 6);
+  });
+
+  it('earns roughly what an attended hour of play earns, minus the missing supervision', () => {
+    const state = { ...freshState(), spaces: 4, occupancy: 1, price: 3 };
+    const played = profitPerSecond({ ...state, occupancy: targetOccupancy(state) }) * 600;
+    const away = simulateAway(state, 10).earned;
+    expect(away).toBeGreaterThan(played * 0.2);
+    expect(away).toBeLessThan(played);
+  });
+
   it('caps at eight hours and rewards the payment system', () => {
     const state = { ...freshState(), lastSavedAt: 1_000 };
     const base = calculateOfflineProgress(state, 1_000 + 24 * 60 * 60_000);
     const automated = calculateOfflineProgress(withLevel(state, 'payment', 3), 1_000 + 24 * 60 * 60_000);
     expect(base.minutes).toBe(480);
+    expect(base.capped).toBe(true);
+    expect(base.awayMinutes).toBe(24 * 60);
     expect(automated.earned).toBeGreaterThan(base.earned);
   });
 
-  it('lets the price throttle offline income as well', () => {
+  it('keeps the account from going into debt while away', () => {
+    const bleeding = { ...freshState(), cash: 2, spaces: 30, price: 0.2, levels: { ...INITIAL_STATE.levels, location: 3, spaces: 29 } };
+    const report = simulateAway(bleeding, 120);
+    expect(report.earned).toBeLessThan(0);
+    expect(report.state.cash).toBe(0);
+  });
+
+  it('lets the price throttle away income as well', () => {
     const state = { ...freshState(), spaces: 6, lastSavedAt: 0 };
     const normal = calculateOfflineProgress(state, 60 * 60_000);
     const dearer = calculateOfflineProgress({ ...state, price: 30 }, 60 * 60_000);

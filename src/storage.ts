@@ -1,4 +1,4 @@
-import { calculateOfflineProgress, GameState, INITIAL_STATE, Incident, IncidentId, UpgradeId } from './game';
+import { AwayReport, calculateOfflineProgress, GameState, INITIAL_STATE, Incident, IncidentId, UpgradeId } from './game';
 
 const SAVE_KEY = 'parking-empire-save-v1';
 
@@ -9,7 +9,7 @@ const LEGACY_UPGRADE_IDS: Record<string, UpgradeId> = {
   gate: 'shelter',
 };
 
-const INCIDENT_IDS: IncidentId[] = ['payment', 'cleaning', 'lighting'];
+const INCIDENT_IDS: IncidentId[] = ['surface', 'payment', 'cleaning', 'lighting'];
 
 const number = (value: unknown, fallback: number): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -52,15 +52,15 @@ const migrate = (raw: Record<string, unknown>): GameState => {
   };
 };
 
-export const loadGame = (now = Date.now()): { state: GameState; offlineEarned: number; offlineMinutes: number } => {
+export const loadGame = (now = Date.now()): { state: GameState; away: AwayReport | null } => {
   const raw = localStorage.getItem(SAVE_KEY);
-  if (!raw) return { state: structuredClone(INITIAL_STATE), offlineEarned: 0, offlineMinutes: 0 };
+  if (!raw) return { state: structuredClone(INITIAL_STATE), away: null };
 
   try {
-    const result = calculateOfflineProgress(migrate(JSON.parse(raw) as Record<string, unknown>), now);
-    return { state: result.state, offlineEarned: result.earned, offlineMinutes: result.minutes };
+    const away = calculateOfflineProgress(migrate(JSON.parse(raw) as Record<string, unknown>), now);
+    return { state: away.state, away };
   } catch {
-    return { state: structuredClone(INITIAL_STATE), offlineEarned: 0, offlineMinutes: 0 };
+    return { state: structuredClone(INITIAL_STATE), away: null };
   }
 };
 

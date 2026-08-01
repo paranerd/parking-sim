@@ -1,6 +1,6 @@
 export type UpgradeId = 'location' | 'spaces' | 'lighting' | 'cleaning' | 'advertising' | 'payment' | 'shelter';
 export type UpgradeCategory = 'Standort' | 'Kapazität' | 'Nachfrage' | 'Erlös';
-export type IncidentId = 'payment' | 'cleaning' | 'lighting';
+export type IncidentId = 'surface' | 'payment' | 'cleaning' | 'lighting';
 
 export interface GameState {
   cash: number;
@@ -231,7 +231,7 @@ export const profitPerMinute = (state: GameState): number => profitPerHour(state
 export const profitPerSecond = (state: GameState): number => profitPerMinute(state) * MINUTES_PER_SECOND;
 
 /** Time constants in real-time seconds. */
-const OCCUPANCY_TAU = 8;
+const OCCUPANCY_TAU = 5;
 const REPUTATION_TAU = 120;
 const CONDITION_WEAR_PER_MINUTE = 0.0035;
 
@@ -286,11 +286,36 @@ export const setHourlyPrice = (state: GameState, price: number): GameState => {
 export const adjustHourlyPrice = (state: GameState, steps: number): GameState =>
   setHourlyPrice(state, Math.max(0, state.price + steps * PRICE_STEP));
 
-const INCIDENTS: Incident[] = [
-  { id: 'payment', title: 'Kasse gestört', description: 'Ein Teil der Einnahmen kommt nicht an.', repairCost: 90 },
-  { id: 'cleaning', title: 'Toilette gesperrt', description: 'Gäste meiden den Parkplatz.', repairCost: 70 },
-  { id: 'lighting', title: 'Beleuchtung defekt', description: 'Abends kommen weniger Gäste.', repairCost: 55 },
+/**
+ * Only things that exist can break. The surface is always there, everything
+ * else needs the matching upgrade – no broken toilet without a cleaning crew.
+ * `hours` is how many hours of takings the repair costs.
+ */
+const INCIDENT_KINDS: { id: IncidentId; title: string; description: string; requires?: UpgradeId; hours: number }[] = [
+  { id: 'surface', title: 'Schlagloch in der Fahrbahn', description: 'Gäste meiden den Platz, bis es geflickt ist.', hours: 1.2 },
+  { id: 'lighting', title: 'Beleuchtung defekt', description: 'Abends kommen weniger Gäste.', requires: 'lighting', hours: 1.5 },
+  { id: 'cleaning', title: 'Toilette gesperrt', description: 'Gäste meiden den Parkplatz.', requires: 'cleaning', hours: 1.5 },
+  { id: 'payment', title: 'Kasse gestört', description: 'Ein Teil der Einnahmen kommt nicht an.', requires: 'payment', hours: 2 },
 ];
+
+/** What can break on this lot right now. */
+export const possibleIncidents = (state: GameState): IncidentId[] =>
+  INCIDENT_KINDS.filter((kind) => !kind.requires || state.levels[kind.requires] > 0).map((kind) => kind.id);
+
+/**
+ * What the lot could take in per hour if it were priced at the market and
+ * filled up. Repairs and maintenance are measured against this, so they never
+ * cost more than a small parking lot can possibly earn.
+ */
+export const earningPower = (state: GameState): number => {
+  const price = marketPrice(state);
+  const priced = { ...state, price };
+  return revenuePerHour({ ...priced, occupancy: targetOccupancy(priced) });
+};
+
+/** A repair costs a couple of hours of takings – never a fixed sum. */
+export const repairPrice = (state: GameState, hours: number): number =>
+  Math.max(3, Math.round(earningPower(state) * hours));
 
 /** The one discrete event per real-time second: something breaks, or it doesn't. */
 export const simulateTick = (state: GameState, random = Math.random): GameState => {
@@ -298,7 +323,11 @@ export const simulateTick = (state: GameState, random = Math.random): GameState 
   next.incidentCooldown -= 1;
 
   if (!next.activeIncident && next.incidentCooldown <= 0 && next.condition < 92 && random() < 0.018) {
-    next.activeIncident = INCIDENTS[Math.floor(random() * INCIDENTS.length)] ?? INCIDENTS[0];
+    const candidates = INCIDENT_KINDS.filter((kind) => !kind.requires || next.levels[kind.requires] > 0);
+    const kind = candidates[Math.floor(random() * candidates.length)] ?? candidates[0];
+    if (kind) {
+      next.activeIncident = { id: kind.id, title: kind.title, description: kind.description, repairCost: repairPrice(next, kind.hours) };
+    }
   }
 
   return next;
@@ -348,21 +377,78 @@ export const performMaintenance = (state: GameState): GameState => {
   return next;
 };
 
-export const maintenanceCost = (state: GameState): number => Math.round(35 + state.spaces * 2.5);
+/** Preventive maintenance costs about an hour of takings. */
+export const maintenanceCost = (state: GameState): number => repairPrice(state, 1);
 
-export const calculateOfflineProgress = (state: GameState, now: number): { state: GameState; earned: number; minutes: number } => {
-  const elapsedMinutes = Math.max(0, Math.min(8 * 60, (now - state.lastSavedAt) / 60_000));
-  // Without supervision only the automated part of the till keeps working –
-  // the rent and the running costs are due either way.
-  const unattendedFactor = 0.5 + state.levels.payment * 0.12;
+/** At most this much real time is credited after an absence. */
+export const AWAY_CAP_MINUTES = 8 * 60;
+
+export interface AwayReport {
+  state: GameState;
+  /** Real minutes actually credited. */
+  minutes: number;
+  /** Real minutes the player was gone, before the cap. */
+  awayMinutes: number;
+  capped: boolean;
+  gameHours: number;
+  gameDays: number;
+  revenue: number;
+  costs: number;
+  earned: number;
+  cars: number;
+  occupancy: number;
+  attendedShare: number;
+}
+
+/**
+ * Books an absence – tab in the background or browser closed. Real time counts
+ * exactly as it does during play (one real second is `MINUTES_PER_SECOND` game
+ * minutes); only a share of the takings arrives without anybody watching,
+ * while rent and running costs are due in full.
+ */
+export const simulateAway = (state: GameState, realMinutes: number): AwayReport => {
+  const awayMinutes = Math.max(0, realMinutes);
+  const minutes = Math.min(AWAY_CAP_MINUTES, awayMinutes);
+  const gameHours = minutes * 60 * MINUTES_PER_SECOND / 60;
+  const attendedShare = Math.min(1, 0.4 + state.levels.payment * 0.1);
+
   const occupancy = targetOccupancy(state);
   const settled = { ...state, occupancy };
-  const revenue = revenuePerHour(settled) * (elapsedMinutes / 60) * unattendedFactor;
-  const earned = revenue - fixedCostPerHour(settled) * (elapsedMinutes / 60);
+  const revenue = revenuePerHour(settled) * gameHours * attendedShare;
+  const costs = fixedCostPerHour(settled) * gameHours;
+  const earned = revenue - costs;
+
   const next = structuredClone(state);
   next.cash = Math.max(0, next.cash + earned);
   next.lifetimeRevenue += revenue;
   next.occupancy = occupancy;
-  next.lastSavedAt = now;
-  return { state: next, earned, minutes: elapsedMinutes };
+  next.carsServed += occupancy * next.spaces * gameHours / AVERAGE_STAY_HOURS;
+
+  const totalMinutes = next.minuteOfDay + gameHours * 60;
+  next.minuteOfDay = totalMinutes % 1440;
+  const gameDays = Math.floor(totalMinutes / 1440);
+  next.day += gameDays;
+  // Nobody maintains the lot while you are gone.
+  next.condition = Math.max(20, next.condition - CONDITION_WEAR_PER_MINUTE * gameHours * 60 * (1 + next.spaces / 20));
+
+  return {
+    state: next,
+    minutes,
+    awayMinutes,
+    capped: awayMinutes > AWAY_CAP_MINUTES,
+    gameHours,
+    gameDays,
+    revenue,
+    costs,
+    earned,
+    cars: occupancy * next.spaces * gameHours / AVERAGE_STAY_HOURS,
+    occupancy,
+    attendedShare,
+  };
+};
+
+export const calculateOfflineProgress = (state: GameState, now: number): AwayReport => {
+  const report = simulateAway(state, (now - state.lastSavedAt) / 60_000);
+  report.state.lastSavedAt = now;
+  return report;
 };

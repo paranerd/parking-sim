@@ -7,7 +7,8 @@ export const loadGame = (now = Date.now()): { state: GameState; offlineEarned: n
   if (!raw) return { state: structuredClone(INITIAL_STATE), offlineEarned: 0, offlineMinutes: 0 };
 
   try {
-    const stored = JSON.parse(raw) as GameState;
+    // `log` belonged to the removed chronicle and is dropped from old saves.
+    const { log: _legacyLog, ...stored } = JSON.parse(raw) as GameState & { log?: unknown };
     const merged: GameState = {
       ...structuredClone(INITIAL_STATE),
       ...stored,

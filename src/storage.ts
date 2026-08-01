@@ -1,4 +1,4 @@
-import { AwayReport, calculateOfflineProgress, GameState, INITIAL_STATE, Incident, IncidentId, UpgradeId } from './game';
+import { AwayReport, calculateOfflineProgress, DemandEvent, GameState, INITIAL_STATE, Incident, IncidentId, UpgradeId } from './game';
 
 const SAVE_KEY = 'parking-empire-save-v1';
 
@@ -30,6 +30,7 @@ const migrate = (raw: Record<string, unknown>): GameState => {
     if (id in levels) levels[id] = Math.max(levels[id], Math.max(0, Math.round(number(value, 0))));
   }
 
+  const storedEvent = raw.activeEvent as DemandEvent | null | undefined;
   const storedIncident = raw.activeIncident as Incident | null | undefined;
   const activeIncident = storedIncident && INCIDENT_IDS.includes(storedIncident.id) ? storedIncident : null;
 
@@ -46,6 +47,9 @@ const migrate = (raw: Record<string, unknown>): GameState => {
     condition: Math.min(100, Math.max(20, number(raw.condition, base.condition))),
     activeIncident,
     incidentCooldown: number(raw.incidentCooldown, base.incidentCooldown),
+    // A stored event is only kept while it still has time on the clock.
+    activeEvent: storedEvent && number(storedEvent.secondsLeft, 0) > 0 ? storedEvent : null,
+    eventCooldown: number(raw.eventCooldown, base.eventCooldown),
     lastSavedAt: number(raw.lastSavedAt, Date.now()),
   };
 };

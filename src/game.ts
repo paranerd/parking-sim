@@ -16,7 +16,19 @@ export interface GameState {
   condition: number;
   activeIncident: Incident | null;
   incidentCooldown: number;
+  activeEvent: DemandEvent | null;
+  eventCooldown: number;
   lastSavedAt: number;
+}
+
+/** A passing reason for more or fewer guests – announced and time boxed. */
+export interface DemandEvent {
+  id: string;
+  title: string;
+  description: string;
+  /** Multiplier on the demand while it lasts. */
+  factor: number;
+  secondsLeft: number;
 }
 
 export interface Incident {
@@ -64,13 +76,13 @@ export const LOCATIONS = [
 ];
 
 export const upgrades: Upgrade[] = [
-  { id: 'location', name: 'Standort verlegen', description: 'Ein besserer Standort bringt deutlich mehr Basis-Nachfrage – und mehr Miete', icon: '⚑', category: 'Standort', maxLevel: 3, baseCost: 120, costMultiplier: 8, stages: LOCATIONS.map((location) => location.name) },
-  { id: 'spaces', name: 'Stellplätze bauen', description: '+5 Stellplätze – mehr Angebot für die Nachfrage', icon: 'P', category: 'Kapazität', maxLevel: null, baseCost: 10, costMultiplier: 1.12 },
-  { id: 'lighting', name: 'LED-Beleuchtung', description: 'Sicheres Gefühl bei Nacht – mehr Nachfrage', icon: '✦', category: 'Nachfrage', maxLevel: 3, baseCost: 30, costMultiplier: 2.2 },
-  { id: 'cleaning', name: 'Reinigungsdienst', description: 'Saubere Flächen und Toiletten – mehr Nachfrage', icon: '◆', category: 'Nachfrage', maxLevel: 3, baseCost: 45, costMultiplier: 2.2 },
-  { id: 'advertising', name: 'Werbung', description: 'Mehr Menschen am Standort kennen deinen Parkplatz', icon: '▲', category: 'Nachfrage', maxLevel: 5, baseCost: 40, costMultiplier: 1.9 },
-  { id: 'payment', name: 'Kassensystem', description: 'Weniger Gäste fahren ohne zu zahlen davon', icon: '€', category: 'Erlös', maxLevel: 3, baseCost: 55, costMultiplier: 2.8, stages: PAYMENT_STAGES.map((stage) => stage.name) },
-  { id: 'shelter', name: 'Überdachung', description: 'Trockene Autos – Gäste akzeptieren höhere Tarife', icon: '⌂', category: 'Erlös', maxLevel: 3, baseCost: 90, costMultiplier: 2.5 },
+  { id: 'location', name: 'Standort verlegen', description: 'Ein besserer Standort bringt deutlich mehr Basis-Nachfrage – und mehr Miete', icon: '⚑', category: 'Standort', maxLevel: 3, baseCost: 25, costMultiplier: 9, stages: LOCATIONS.map((location) => location.name) },
+  { id: 'spaces', name: 'Stellplätze bauen', description: '+5 Stellplätze – mehr Angebot für die Nachfrage', icon: 'P', category: 'Kapazität', maxLevel: null, baseCost: 2, costMultiplier: 1.12 },
+  { id: 'lighting', name: 'LED-Beleuchtung', description: 'Sicheres Gefühl bei Nacht – mehr Nachfrage', icon: '✦', category: 'Nachfrage', maxLevel: 3, baseCost: 6, costMultiplier: 2.2 },
+  { id: 'cleaning', name: 'Reinigungsdienst', description: 'Saubere Flächen und Toiletten – mehr Nachfrage', icon: '◆', category: 'Nachfrage', maxLevel: 3, baseCost: 9, costMultiplier: 2.2 },
+  { id: 'advertising', name: 'Werbung', description: 'Mehr Menschen am Standort kennen deinen Parkplatz', icon: '▲', category: 'Nachfrage', maxLevel: 5, baseCost: 8, costMultiplier: 1.9 },
+  { id: 'payment', name: 'Kassensystem', description: 'Weniger Gäste fahren ohne zu zahlen davon', icon: '€', category: 'Erlös', maxLevel: 3, baseCost: 12, costMultiplier: 2.8, stages: PAYMENT_STAGES.map((stage) => stage.name) },
+  { id: 'shelter', name: 'Überdachung', description: 'Trockene Autos – Gäste akzeptieren höhere Tarife', icon: '⌂', category: 'Erlös', maxLevel: 3, baseCost: 18, costMultiplier: 2.5 },
 ];
 
 export const INITIAL_STATE: GameState = {
@@ -86,6 +98,8 @@ export const INITIAL_STATE: GameState = {
   condition: 100,
   activeIncident: null,
   incidentCooldown: 80,
+  activeEvent: null,
+  eventCooldown: 45,
   lastSavedAt: Date.now(),
 };
 
@@ -121,6 +135,7 @@ const clamp = (value: number, min: number, max: number): number => Math.min(max,
 
 export const upgradeCost = (upgrade: Upgrade, level: number): number => {
   const raw = upgrade.baseCost * upgrade.costMultiplier ** level;
+  if (raw < 20) return Math.round(raw * 10) / 10;
   return raw < 100 ? Math.round(raw) : Math.round(raw / 10) * 10;
 };
 
@@ -151,7 +166,8 @@ export const reputationFactor = (state: GameState): number => Math.max(0.25, 0.6
  */
 export const attraction = (state: GameState): number => {
   const incidentPenalty = state.activeIncident && state.activeIncident.id !== 'payment' ? 0.8 : 1;
-  return currentLocation(state).baseDemand * equipmentFactor(state) * incidentPenalty * reputationFactor(state);
+  return currentLocation(state).baseDemand * equipmentFactor(state) * incidentPenalty
+    * reputationFactor(state) * (state.activeEvent?.factor ?? 1);
 };
 
 /** Even a free lot only draws the guests that pass by – the catchment limit. */
@@ -309,10 +325,43 @@ export const earningPower = (state: GameState): number => {
 export const repairPrice = (state: GameState, minutes: number): number =>
   Math.max(3, Math.round(earningPower(state) * minutes / 60));
 
+/**
+ * Things that happen around the lot and move the demand for a few minutes.
+ * They are announced with their effect and a countdown, so the answer is a
+ * deliberate price change rather than a surprise.
+ */
+const EVENT_KINDS: { id: string; title: string; description: string; factor: number; seconds: number; fromLocation?: number }[] = [
+  { id: 'festival', title: 'Stadtfest', description: 'Die halbe Stadt ist unterwegs.', factor: 2.2, seconds: 180 },
+  { id: 'rain', title: 'Dauerregen', description: 'Wer sonst läuft, fährt heute.', factor: 1.4, seconds: 240 },
+  { id: 'match', title: 'Heimspiel im Stadion', description: 'Alle suchen gleichzeitig einen Platz.', factor: 1.9, seconds: 150 },
+  { id: 'holiday', title: 'Ferienbeginn', description: 'Reisende stellen ihr Auto für Tage ab.', factor: 1.7, seconds: 240, fromLocation: 2 },
+  { id: 'roadworks', title: 'Baustelle vor der Einfahrt', description: 'Die Zufahrt ist halb gesperrt.', factor: 0.55, seconds: 180 },
+  { id: 'competition', title: 'Neuer Parkplatz nebenan', description: 'Die Konkurrenz nimmt dir Gäste ab.', factor: 0.7, seconds: 210 },
+];
+
+/** Events that can happen at the current location. */
+export const possibleEvents = (state: GameState): string[] =>
+  EVENT_KINDS.filter((kind) => (kind.fromLocation ?? 0) <= state.levels.location).map((kind) => kind.id);
+
 /** The one discrete event per real-time second: something breaks, or it doesn't. */
 export const simulateTick = (state: GameState, random = Math.random): GameState => {
   const next: GameState = structuredClone(state);
   next.incidentCooldown -= 1;
+
+  if (next.activeEvent) {
+    next.activeEvent.secondsLeft -= 1;
+    if (next.activeEvent.secondsLeft <= 0) {
+      next.activeEvent = null;
+      next.eventCooldown = 90 + Math.floor(random() * 150);
+    }
+  } else {
+    next.eventCooldown -= 1;
+    if (next.eventCooldown <= 0) {
+      const candidates = EVENT_KINDS.filter((kind) => (kind.fromLocation ?? 0) <= next.levels.location);
+      const kind = candidates[Math.floor(random() * candidates.length)] ?? candidates[0];
+      next.activeEvent = { id: kind.id, title: kind.title, description: kind.description, factor: kind.factor, secondsLeft: kind.seconds };
+    }
+  }
 
   if (!next.activeIncident && next.incidentCooldown <= 0 && next.condition < 92 && random() < 0.018) {
     const candidates = INCIDENT_KINDS.filter((kind) => !kind.requires || next.levels[kind.requires] > 0);
@@ -408,6 +457,15 @@ export const simulateAway = (state: GameState, realMinutes: number): AwayReport 
   const earned = revenue - costs;
 
   const next = structuredClone(state);
+  // A running event keeps ticking while you are gone instead of vanishing on
+  // every reload; nobody was there to react to it either way.
+  if (next.activeEvent) {
+    next.activeEvent.secondsLeft -= minutes * 60;
+    if (next.activeEvent.secondsLeft <= 0) {
+      next.activeEvent = null;
+      next.eventCooldown = 45;
+    }
+  }
   next.cash = Math.max(0, next.cash + earned);
   next.lifetimeRevenue += revenue;
   next.carsServed += filled * next.spaces * gameHours / AVERAGE_STAY_HOURS;

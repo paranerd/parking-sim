@@ -81,9 +81,14 @@ const goal = (game: GameState): { title: string; progress: number; hint: string 
   };
 };
 
+const countdown = (seconds: number): string =>
+  `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.max(0, Math.round(seconds % 60))).padStart(2, '0')}`;
+
 /** Tells the player whether supply or demand is the current bottleneck. */
 const marketHint = (game: GameState): string => {
   const turnedAway = turnedAwayShare(game);
+  if (game.activeEvent && game.activeEvent.factor >= 1 && turnedAway > 0.1) return `${game.activeEvent.title}: ${percent(turnedAway * 100)} finden keinen Platz – jetzt ist mehr drin`;
+  if (game.activeEvent && game.activeEvent.factor < 1 && occupancy(game) < 0.8) return `${game.activeEvent.title}: mit einem günstigeren Tarif bleibt der Platz voll`;
   if (turnedAway > 0.15) return `${percent(turnedAway * 100)} der Gäste finden keinen Platz – du kannst mehr verlangen oder ausbauen`;
   if (turnedAway > 0.02) return `Ausgebucht – ${percent(turnedAway * 100)} finden keinen Platz und bewerten schlechter`;
   if (occupancy(game) < 0.65) return 'Viele Plätze bleiben leer – ein günstigerer Tarif holt mehr Gäste';
@@ -161,6 +166,7 @@ const demandModal = (game: GameState): string => {
         <tr><td>Basis-Nachfrage <em>(${currentLocation(game).name})</em></td><td>${cars(currentLocation(game).baseDemand)} Autos</td></tr>
         <tr><td>Bewertung <em>(${game.reputation.toFixed(1)} ★)</em></td><td>× ${percent(reputationFactor(game) * 100)}</td></tr>
         <tr><td>Werbung und Ausstattung</td><td>× ${percent(equipmentFactor(game) * 100)}</td></tr>
+        ${game.activeEvent ? `<tr><td>${game.activeEvent.title} <em>(noch ${countdown(game.activeEvent.secondsLeft)})</em></td><td>× ${percent(game.activeEvent.factor * 100)}</td></tr>` : ''}
         <tr><td>Preis <em>(${money(game.price)} gegen ${money(willingnessToPay(game))} Zahlungsbereitschaft)</em></td><td>× ${percent(priceFactor * 100)}</td></tr>
         <tr class="sum"><td>Autos, die parken wollen</td><td>${cars(wanted)}</td></tr>
         <tr class="section"><th colspan="2">Auf ${game.spaces} ${game.spaces === 1 ? 'Stellplatz' : 'Stellplätzen'}</th></tr>
@@ -210,7 +216,7 @@ const focusedSelector = (): string | null => {
  */
 const structureKey = (): string => [
   state.spaces, state.day, selectedCategory, muted, askReset, showProfitModal, showDemandModal, awayReport !== null,
-  state.activeIncident?.id ?? '-', state.price <= 0, occupiedSpaces(state),
+  state.activeIncident?.id ?? '-', state.activeEvent?.id ?? '-', state.price <= 0, occupiedSpaces(state),
   Object.values(state.levels).join(','),
   // Buttons flip between enabled and disabled as the cash passes their price.
   upgrades.map((upgrade) => state.cash >= upgradeCost(upgrade, state.levels[upgrade.id])).join(''),
@@ -287,6 +293,10 @@ const render = (): void => {
           <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
           <div class="metric"><div><span>Auslastung</span><strong data-live="occupancy">${percent(filled)}</strong></div><div class="progress"><i data-live="occupancy-bar" style="width:${filled}%"></i></div><small><b data-live="capacity">${cars(occupancy(state) * state.spaces)}</b> von ${state.spaces} ${state.spaces === 1 ? 'Platz' : 'Plätzen'} belegt</small></div>
           <div class="metric"><div><span>Nachfrage <button class="info-button" data-action="explain-demand" aria-haspopup="dialog" aria-label="Wie entsteht die Nachfrage?">i</button></span><strong data-live="demand">${percent(demandShare)}</strong></div><div class="progress ${demandShare > 100 ? 'amber' : ''}"><i data-live="demand-bar" style="width:${Math.min(100, demandShare)}%"></i></div><small><b data-live="demand-cars">${cars(wanted)}</b> Autos suchen einen Platz</small></div>
+          ${state.activeEvent ? `<div class="event ${state.activeEvent.factor >= 1 ? 'good' : 'bad'}">
+            <div><strong>${state.activeEvent.title}</strong><small>${state.activeEvent.description}</small></div>
+            <div class="event-effect"><b>Nachfrage ${state.activeEvent.factor >= 1 ? '×' : '×'} ${state.activeEvent.factor.toLocaleString('de-DE')}</b><span data-live="event-time">noch ${countdown(state.activeEvent.secondsLeft)}</span></div>
+          </div>` : ''}
           <div class="market-hint ${turnedAwayShare(state) > 0.02 ? 'tight' : ''}" data-live="market-hint">${marketHint(state)}</div>
           <div class="price-setting">
             <div class="price-head"><span id="price-label">PREIS / STD.</span><small>Gewinn <b class="${loss ? 'negative' : 'positive'}" data-live="rate">${rate(state)}</b> / Std.</small></div>
@@ -478,6 +488,7 @@ const renderLiveValues = (): void => {
     demandBar.parentElement?.classList.toggle('amber', demandShare > 100);
   }
 
+  if (state.activeEvent) setLive('event-time', `noch ${countdown(state.activeEvent.secondsLeft)}`);
   setLive('price', money(state.price));
   setLive('maintenance', money(maintenanceCost(state)));
   setLive('reviews', String(Math.max(4, Math.floor(state.carsServed) + 14)));

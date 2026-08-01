@@ -1,4 +1,4 @@
-export type UpgradeId = 'spaces' | 'price' | 'gate' | 'lighting' | 'restroom' | 'automation';
+export type UpgradeId = 'spaces' | 'gate' | 'lighting' | 'restroom' | 'automation';
 
 export interface GameState {
   cash: number;
@@ -31,14 +31,13 @@ export interface Upgrade {
   description: string;
   icon: string;
   category: 'Ausbau' | 'Service' | 'Automation';
-  maxLevel: number;
+  maxLevel: number | null;
   baseCost: number;
   costMultiplier: number;
 }
 
 export const upgrades: Upgrade[] = [
-  { id: 'spaces', name: 'Stellplätze', description: '+4 Parkplätze und mehr Kapazität', icon: 'P', category: 'Ausbau', maxLevel: 10, baseCost: 120, costMultiplier: 1.7 },
-  { id: 'price', name: 'Tarif optimieren', description: '+0,50 € pro Stunde', icon: '€', category: 'Ausbau', maxLevel: 8, baseCost: 80, costMultiplier: 1.65 },
+  { id: 'spaces', name: 'Stellplatz bauen', description: '+1 Parkplatz – beliebig oft ausbaubar', icon: 'P', category: 'Ausbau', maxLevel: null, baseCost: 10, costMultiplier: 1.16 },
   { id: 'gate', name: 'Schnellere Schranke', description: 'Fahrzeuge werden schneller bedient', icon: '↗', category: 'Ausbau', maxLevel: 6, baseCost: 160, costMultiplier: 1.8 },
   { id: 'lighting', name: 'LED-Beleuchtung', description: 'Mehr Sicherheit und besserer Ruf', icon: '✦', category: 'Service', maxLevel: 3, baseCost: 240, costMultiplier: 2.1 },
   { id: 'restroom', name: 'Saubere Toiletten', description: 'Zufriedene Gäste bleiben länger', icon: '◆', category: 'Service', maxLevel: 3, baseCost: 320, costMultiplier: 2.1 },
@@ -46,13 +45,13 @@ export const upgrades: Upgrade[] = [
 ];
 
 export const INITIAL_STATE: GameState = {
-  cash: 350,
+  cash: 0,
   lifetimeRevenue: 0,
-  spaces: 10,
-  occupied: 4,
+  spaces: 1,
+  occupied: 1,
   price: 2.5,
   reputation: 3.6,
-  levels: { spaces: 0, price: 0, gate: 0, lighting: 0, restroom: 0, automation: 0 },
+  levels: { spaces: 0, gate: 0, lighting: 0, restroom: 0, automation: 0 },
   carsServed: 0,
   day: 1,
   minuteOfDay: 8 * 60 + 30,
@@ -77,6 +76,17 @@ export const incomePerMinute = (state: GameState): number => {
   const incidentPenalty = state.activeIncident?.id === 'gate' ? 0.55 : 1;
   const comfort = 1 + state.levels.restroom * 0.08;
   return state.occupied * (state.price / 60) * comfort * incidentPenalty;
+};
+
+/** The simulation advances two game minutes on every one-second tick. */
+export const incomePerSecond = (state: GameState): number => incomePerMinute(state) * 2;
+
+export const setHourlyPrice = (state: GameState, price: number): GameState => {
+  if (!Number.isFinite(price) || price < 0 || price === state.price) return state;
+  const next = structuredClone(state);
+  next.price = Math.round(price * 100) / 100;
+  next.log.unshift(`Der Stundenpreis wurde auf ${next.price.toLocaleString('de-DE')} € gesetzt.`);
+  return next;
 };
 
 export const simulateTick = (state: GameState, random = Math.random): GameState => {
@@ -123,16 +133,15 @@ export const buyUpgrade = (state: GameState, id: UpgradeId): GameState => {
   if (!upgrade) return state;
   const level = state.levels[id];
   const cost = upgradeCost(upgrade, level);
-  if (level >= upgrade.maxLevel || state.cash < cost) return state;
+  if ((upgrade.maxLevel !== null && level >= upgrade.maxLevel) || state.cash < cost) return state;
 
   const next = structuredClone(state);
   next.cash -= cost;
   next.levels[id] += 1;
   if (id === 'spaces') {
-    next.spaces += 4;
+    next.spaces += 1;
     next.condition = Math.min(100, next.condition + 4);
   }
-  if (id === 'price') next.price += 0.5;
   next.log.unshift(`${upgrade.name} wurde auf Stufe ${next.levels[id]} verbessert.`);
   return next;
 };

@@ -2,10 +2,11 @@ import './styles.scss';
 import {
   buyUpgrade,
   GameState,
-  incomePerMinute,
+  incomePerSecond,
   maintenanceCost,
   performMaintenance,
   repairIncident,
+  setHourlyPrice,
   simulateTick,
   UpgradeId,
   upgradeCost,
@@ -44,7 +45,7 @@ const render = (): void => {
       <a class="brand" href="#" aria-label="Parking Empire Startseite"><span class="brand-mark">P</span><strong>Parking<br><em>Empire</em></strong></a>
       <div class="header-stats">
         <div><span>KONTOSTAND</span><strong>${money(state.cash)}</strong></div>
-        <div><span>EINNAHMEN / MIN</span><strong class="positive">+ ${money(incomePerMinute(state))}</strong></div>
+        <div><span>GEWINN / SEK.</span><strong class="positive">+ ${money(incomePerSecond(state))}</strong></div>
         <div><span>AUSLASTUNG</span><strong>${state.occupied} / ${state.spaces}</strong></div>
       </div>
       <div class="header-actions">
@@ -82,7 +83,7 @@ const render = (): void => {
           <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
           <div class="metric"><div><span>Auslastung</span><strong>${Math.round(occupancy)}%</strong></div><div class="progress"><i style="width:${occupancy}%"></i></div><small>${state.occupied} von ${state.spaces} Plätzen belegt</small></div>
           <div class="quick-stats">
-            <div><span>PREIS / STD.</span><strong>${money(state.price)}</strong><small>Markt: 3,00 €</small></div>
+            <div class="price-setting"><label for="hourly-price">PREIS / STD.</label><div><input id="hourly-price" name="hourly-price" type="number" min="0" step="0.10" value="${state.price.toFixed(2)}" aria-describedby="price-hint"><span>€</span></div><small id="price-hint">Frei wählbar · beeinflusst Nachfrage</small></div>
             <div><span>BEWERTUNG</span><strong>${state.reputation.toFixed(1)} <em>★</em></strong><small>${Math.max(4, state.carsServed + 14)} Rezensionen</small></div>
           </div>
           <div class="condition">
@@ -103,10 +104,11 @@ const render = (): void => {
           ${filtered.map(upgrade => {
             const level = state.levels[upgrade.id];
             const cost = upgradeCost(upgrade, level);
-            const complete = level >= upgrade.maxLevel;
+            const complete = upgrade.maxLevel !== null && level >= upgrade.maxLevel;
+            const displayedLevels = upgrade.maxLevel === null ? 5 : Math.min(5, upgrade.maxLevel);
             return `<article class="upgrade-card ${state.cash >= cost && !complete ? 'affordable' : ''}">
               <div class="upgrade-icon">${upgrade.icon}</div>
-              <div class="upgrade-copy"><span>${upgrade.category.toUpperCase()}</span><h3>${upgrade.name}</h3><p>${upgrade.description}</p><div class="level-dots">${Array.from({ length: Math.min(5, upgrade.maxLevel) }, (_, index) => `<i class="${index < level ? 'filled' : ''}"></i>`).join('')}<small>STUFE ${level}/${upgrade.maxLevel}</small></div></div>
+              <div class="upgrade-copy"><span>${upgrade.category.toUpperCase()}</span><h3>${upgrade.name}</h3><p>${upgrade.description}</p><div class="level-dots">${Array.from({ length: displayedLevels }, (_, index) => `<i class="${upgrade.maxLevel === null ? 'filled endless' : index < level ? 'filled' : ''}"></i>`).join('')}<small>STUFE ${level}${upgrade.maxLevel === null ? ' · ∞' : `/${upgrade.maxLevel}`}</small></div></div>
               <button data-upgrade="${upgrade.id}" ${state.cash < cost || complete ? 'disabled' : ''}><span>${complete ? 'MAXIMAL' : 'VERBESSERN'}</span><strong>${complete ? '✓' : money(cost)}</strong></button>
             </article>`;
           }).join('')}
@@ -145,10 +147,17 @@ app.addEventListener('click', (event) => {
   if (target.dataset.action !== 'close-modal') render();
 });
 
+app.addEventListener('change', (event) => {
+  const input = (event.target as HTMLElement).closest<HTMLInputElement>('#hourly-price');
+  if (!input) return;
+  state = setHourlyPrice(state, input.valueAsNumber);
+  render();
+});
+
 render();
 setInterval(() => {
   state = simulateTick(state);
   render();
-}, 1600);
+}, 1000);
 setInterval(() => saveGame(state), 5000);
 window.addEventListener('beforeunload', () => saveGame(state));

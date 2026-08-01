@@ -3,10 +3,12 @@ import {
   buyUpgrade,
   calculateOfflineProgress,
   incomePerMinute,
+  incomePerSecond,
   INITIAL_STATE,
   maintenanceCost,
   performMaintenance,
   repairIncident,
+  setHourlyPrice,
   simulateTick,
   upgradeCost,
   upgrades,
@@ -23,6 +25,12 @@ describe('parking simulation', () => {
     expect(next.occupied).toBe(state.occupied);
   });
 
+  it('starts with one occupied space and no capital', () => {
+    expect(INITIAL_STATE.cash).toBe(0);
+    expect(INITIAL_STATE.spaces).toBe(1);
+    expect(INITIAL_STATE.occupied).toBe(1);
+  });
+
   it('moves to the next day after midnight', () => {
     const state = freshState();
     state.minuteOfDay = 1439;
@@ -36,10 +44,33 @@ describe('parking simulation', () => {
     const upgrade = upgrades.find((item) => item.id === 'spaces');
     expect(upgrade).toBeDefined();
     const cost = upgradeCost(upgrade!, 0);
+    state.cash = cost;
     const next = buyUpgrade(state, 'spaces');
-    expect(next.cash).toBe(state.cash - cost);
-    expect(next.spaces).toBe(14);
+    expect(next.cash).toBe(0);
+    expect(next.spaces).toBe(2);
     expect(next.levels.spaces).toBe(1);
+  });
+
+  it('allows unlimited space upgrades', () => {
+    const state = freshState();
+    state.cash = Number.MAX_SAFE_INTEGER;
+    state.levels.spaces = 100;
+    const next = buyUpgrade(state, 'spaces');
+    expect(next.spaces).toBe(2);
+    expect(next.levels.spaces).toBe(101);
+  });
+
+  it('sets any non-negative hourly price without charging cash', () => {
+    const state = freshState();
+    const next = setHourlyPrice(state, 7.349);
+    expect(next.price).toBe(7.35);
+    expect(next.cash).toBe(state.cash);
+    expect(setHourlyPrice(state, -1)).toBe(state);
+  });
+
+  it('reports the revenue earned by one real-time tick as profit per second', () => {
+    const state = freshState();
+    expect(incomePerSecond(state)).toBeCloseTo(incomePerMinute(state) * 2);
   });
 
   it('does not mutate or upgrade an unaffordable state', () => {
@@ -51,6 +82,7 @@ describe('parking simulation', () => {
 
   it('repairs an incident and improves condition', () => {
     const state = freshState();
+    state.cash = 350;
     state.condition = 50;
     state.activeIncident = { id: 'gate', title: 'Defekt', description: 'Test', repairCost: 90 };
     const next = repairIncident(state);
@@ -61,6 +93,7 @@ describe('parking simulation', () => {
 
   it('performs preventive maintenance', () => {
     const state = freshState();
+    state.cash = 350;
     state.condition = 60;
     const next = performMaintenance(state);
     expect(next.condition).toBe(100);

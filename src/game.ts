@@ -57,15 +57,15 @@ export const PAYMENT_STAGES = [
  * has to be earned back every hour.
  */
 export const LOCATIONS = [
-  { name: 'Vorstadt', address: 'Sonnenallee 24', baseDemand: 1.8, rentPerHour: 0.25, willingnessFactor: 1 },
-  { name: 'Einkaufsstraße', address: 'Marktplatz 8', baseDemand: 5.5, rentPerHour: 2.2, willingnessFactor: 1.4 },
-  { name: 'Bahnhof', address: 'Bahnhofsplatz 1', baseDemand: 17, rentPerHour: 12, willingnessFactor: 1.9 },
-  { name: 'Flughafen', address: 'Terminalring 3', baseDemand: 52, rentPerHour: 65, willingnessFactor: 3 },
+  { name: 'Vorstadt', address: 'Sonnenallee 24', baseDemand: 36, rentPerHour: 5, willingnessFactor: 1 },
+  { name: 'Einkaufsstraße', address: 'Marktplatz 8', baseDemand: 110, rentPerHour: 44, willingnessFactor: 1.4 },
+  { name: 'Bahnhof', address: 'Bahnhofsplatz 1', baseDemand: 340, rentPerHour: 240, willingnessFactor: 1.9 },
+  { name: 'Flughafen', address: 'Terminalring 3', baseDemand: 1040, rentPerHour: 1300, willingnessFactor: 3 },
 ];
 
 export const upgrades: Upgrade[] = [
   { id: 'location', name: 'Standort verlegen', description: 'Ein besserer Standort bringt deutlich mehr Basis-Nachfrage – und mehr Miete', icon: '⚑', category: 'Standort', maxLevel: 3, baseCost: 120, costMultiplier: 8, stages: LOCATIONS.map((location) => location.name) },
-  { id: 'spaces', name: 'Stellplatz bauen', description: '+1 Stellplatz – mehr Angebot für die Nachfrage', icon: 'P', category: 'Kapazität', maxLevel: null, baseCost: 10, costMultiplier: 1.12 },
+  { id: 'spaces', name: 'Stellplätze bauen', description: '+5 Stellplätze – mehr Angebot für die Nachfrage', icon: 'P', category: 'Kapazität', maxLevel: null, baseCost: 10, costMultiplier: 1.12 },
   { id: 'lighting', name: 'LED-Beleuchtung', description: 'Sicheres Gefühl bei Nacht – mehr Nachfrage', icon: '✦', category: 'Nachfrage', maxLevel: 3, baseCost: 30, costMultiplier: 2.2 },
   { id: 'cleaning', name: 'Reinigungsdienst', description: 'Saubere Flächen und Toiletten – mehr Nachfrage', icon: '◆', category: 'Nachfrage', maxLevel: 3, baseCost: 45, costMultiplier: 2.2 },
   { id: 'advertising', name: 'Werbung', description: 'Mehr Menschen am Standort kennen deinen Parkplatz', icon: '▲', category: 'Nachfrage', maxLevel: 5, baseCost: 40, costMultiplier: 1.9 },
@@ -76,7 +76,7 @@ export const upgrades: Upgrade[] = [
 export const INITIAL_STATE: GameState = {
   cash: 0,
   lifetimeRevenue: 0,
-  spaces: 1,
+  spaces: 20,
   price: 2.5,
   reputation: 3.6,
   levels: { location: 0, spaces: 0, lighting: 0, cleaning: 0, advertising: 0, payment: 0, shelter: 0 },
@@ -89,8 +89,12 @@ export const INITIAL_STATE: GameState = {
   lastSavedAt: Date.now(),
 };
 
-/** Game minutes that pass during one real-time second. */
-export const MINUTES_PER_SECOND = 2;
+/**
+ * Game time runs at real time: one second in the game is one second on the
+ * clock, and a game hour takes a real hour. Everything that is stated per
+ * hour is therefore an honest hourly rate.
+ */
+export const SECONDS_PER_HOUR = 3600;
 /** Step of a single price adjustment in euros. */
 export const PRICE_STEP = 0.1;
 
@@ -108,6 +112,8 @@ const REPUTATION_PER_LEVEL: Record<UpgradeId, number> = { location: 0, spaces: 0
 const RUNNING_COST_PER_LEVEL: Record<UpgradeId, number> = { location: 0, spaces: 0, lighting: 0.15, cleaning: 0.35, advertising: 0.5, payment: 0, shelter: 0.1 };
 /** Upkeep of a single space per hour. */
 export const COST_PER_SPACE = 0.06;
+/** Spaces added per purchase – a single one would not move a real lot. */
+export const SPACES_PER_UPGRADE = 5;
 /** Reputation lost when the lot turns away every single guest. */
 const CONGESTION_PENALTY = 2.2;
 
@@ -222,7 +228,7 @@ export const profitPerHour = (state: GameState): number => revenuePerHour(state)
 
 export const profitPerMinute = (state: GameState): number => profitPerHour(state) / 60;
 
-export const profitPerSecond = (state: GameState): number => profitPerMinute(state) * MINUTES_PER_SECOND;
+export const profitPerSecond = (state: GameState): number => profitPerHour(state) / SECONDS_PER_HOUR;
 
 /** Time constants in real-time seconds. */
 const REPUTATION_TAU = 120;
@@ -239,7 +245,7 @@ const ease = (seconds: number, tau: number): number => 1 - Math.exp(-seconds / t
 export const advanceTime = (state: GameState, seconds: number): GameState => {
   if (!Number.isFinite(seconds) || seconds <= 0) return state;
   const next = structuredClone(state);
-  const minutes = seconds * MINUTES_PER_SECOND;
+  const minutes = seconds / 60;
 
   next.minuteOfDay += minutes;
   while (next.minuteOfDay >= 1440) {
@@ -275,13 +281,13 @@ export const adjustHourlyPrice = (state: GameState, steps: number): GameState =>
 /**
  * Only things that exist can break. The surface is always there, everything
  * else needs the matching upgrade – no broken toilet without a cleaning crew.
- * `hours` is how many hours of takings the repair costs.
+ * `minutes` is how many minutes of takings the repair costs.
  */
-const INCIDENT_KINDS: { id: IncidentId; title: string; description: string; requires?: UpgradeId; hours: number }[] = [
-  { id: 'surface', title: 'Schlagloch in der Fahrbahn', description: 'Gäste meiden den Platz, bis es geflickt ist.', hours: 1.2 },
-  { id: 'lighting', title: 'Beleuchtung defekt', description: 'Abends kommen weniger Gäste.', requires: 'lighting', hours: 1.5 },
-  { id: 'cleaning', title: 'Toilette gesperrt', description: 'Gäste meiden den Parkplatz.', requires: 'cleaning', hours: 1.5 },
-  { id: 'payment', title: 'Kasse gestört', description: 'Ein Teil der Einnahmen kommt nicht an.', requires: 'payment', hours: 2 },
+const INCIDENT_KINDS: { id: IncidentId; title: string; description: string; requires?: UpgradeId; minutes: number }[] = [
+  { id: 'surface', title: 'Schlagloch in der Fahrbahn', description: 'Gäste meiden den Platz, bis es geflickt ist.', minutes: 1.2 },
+  { id: 'lighting', title: 'Beleuchtung defekt', description: 'Abends kommen weniger Gäste.', requires: 'lighting', minutes: 1.5 },
+  { id: 'cleaning', title: 'Toilette gesperrt', description: 'Gäste meiden den Parkplatz.', requires: 'cleaning', minutes: 1.5 },
+  { id: 'payment', title: 'Kasse gestört', description: 'Ein Teil der Einnahmen kommt nicht an.', requires: 'payment', minutes: 2 },
 ];
 
 /** What can break on this lot right now. */
@@ -299,9 +305,9 @@ export const earningPower = (state: GameState): number => {
   return revenuePerHour(priced);
 };
 
-/** A repair costs a couple of hours of takings – never a fixed sum. */
-export const repairPrice = (state: GameState, hours: number): number =>
-  Math.max(3, Math.round(earningPower(state) * hours));
+/** A repair costs a couple of minutes of takings – never a fixed sum. */
+export const repairPrice = (state: GameState, minutes: number): number =>
+  Math.max(3, Math.round(earningPower(state) * minutes / 60));
 
 /** The one discrete event per real-time second: something breaks, or it doesn't. */
 export const simulateTick = (state: GameState, random = Math.random): GameState => {
@@ -312,7 +318,7 @@ export const simulateTick = (state: GameState, random = Math.random): GameState 
     const candidates = INCIDENT_KINDS.filter((kind) => !kind.requires || next.levels[kind.requires] > 0);
     const kind = candidates[Math.floor(random() * candidates.length)] ?? candidates[0];
     if (kind) {
-      next.activeIncident = { id: kind.id, title: kind.title, description: kind.description, repairCost: repairPrice(next, kind.hours) };
+      next.activeIncident = { id: kind.id, title: kind.title, description: kind.description, repairCost: repairPrice(next, kind.minutes) };
     }
   }
 
@@ -330,7 +336,7 @@ export const buyUpgrade = (state: GameState, id: UpgradeId): GameState => {
   next.cash -= cost;
   next.levels[id] += 1;
   if (id === 'spaces') {
-    next.spaces += 1;
+    next.spaces += SPACES_PER_UPGRADE;
     next.condition = Math.min(100, next.condition + 4);
   }
   return next;
@@ -361,7 +367,7 @@ export const performMaintenance = (state: GameState): GameState => {
   return next;
 };
 
-/** Preventive maintenance costs about an hour of takings. */
+/** Preventive maintenance costs about a minute of takings. */
 export const maintenanceCost = (state: GameState): number => repairPrice(state, 1);
 
 /** At most this much real time is credited after an absence. */
@@ -386,14 +392,14 @@ export interface AwayReport {
 
 /**
  * Books an absence – tab in the background or browser closed. Real time counts
- * exactly as it does during play (one real second is `MINUTES_PER_SECOND` game
- * minutes); only a share of the takings arrives without anybody watching,
+ * exactly as it does during play; only a share of the takings arrives without
+ * anybody watching,
  * while rent and running costs are due in full.
  */
 export const simulateAway = (state: GameState, realMinutes: number): AwayReport => {
   const awayMinutes = Math.max(0, realMinutes);
   const minutes = Math.min(AWAY_CAP_MINUTES, awayMinutes);
-  const gameHours = minutes * 60 * MINUTES_PER_SECOND / 60;
+  const gameHours = minutes / 60;
   const attendedShare = Math.min(1, 0.4 + state.levels.payment * 0.1);
 
   const filled = occupancy(state);

@@ -16,7 +16,8 @@ import {
   maintenanceCost,
   marketPrice,
   MAX_DEMAND_FACTOR,
-  MINUTES_PER_SECOND,
+  SECONDS_PER_HOUR,
+  SPACES_PER_UPGRADE,
   paymentRate,
   paymentStage,
   possibleIncidents,
@@ -51,12 +52,15 @@ const spaceUpgrade = upgrades.find((upgrade) => upgrade.id === 'spaces')!;
 const withLevel = (state: GameState, id: UpgradeId, level: number): GameState =>
   ({ ...state, levels: { ...state.levels, [id]: level } });
 
+/** A lot with far more capacity than the location can fill. */
+const roomy = (state: GameState, factor = 5): GameState => ({ ...state, spaces: Math.ceil(demand(state) * factor) });
+
 describe('continuous operation', () => {
   it('earns without any discrete space being occupied', () => {
     const state = freshState();
     const next = advanceTime(state, 1);
     expect(next.cash).toBeGreaterThan(0);
-    expect(next.minuteOfDay).toBe(state.minuteOfDay + MINUTES_PER_SECOND);
+    expect(next.minuteOfDay).toBeCloseTo(state.minuteOfDay + 1 / 60, 9);
   });
 
   it('books revenue continuously for fractions of a second', () => {
@@ -76,7 +80,7 @@ describe('continuous operation', () => {
   });
 
   it('follows a price change without any delay', () => {
-    const state = { ...freshState(), spaces: 6 };
+    const state = roomy(freshState());
     const before = occupancy(state);
     const dearer = { ...state, price: state.price * 2 };
     // No easing, no lag: the new price is in the occupancy and in the profit
@@ -88,14 +92,15 @@ describe('continuous operation', () => {
 
   it('moves to the next day after midnight', () => {
     const state = { ...freshState(), minuteOfDay: 1439 };
-    const next = advanceTime(state, 1);
+    // A game minute takes a real minute now.
+    const next = advanceTime(state, 60);
     expect(next.day).toBe(2);
-    expect(next.minuteOfDay).toBe(1);
+    expect(next.minuteOfDay).toBeCloseTo(0, 9);
   });
 
   it('reports the profit of one real-time second', () => {
     const state = freshState();
-    expect(profitPerSecond(state)).toBeCloseTo(profitPerHour(state) / 60 * MINUTES_PER_SECOND);
+    expect(profitPerSecond(state)).toBeCloseTo(profitPerHour(state) / SECONDS_PER_HOUR);
   });
 
   it('leaves the money untouched during an event tick', () => {
@@ -132,19 +137,19 @@ describe('supply, demand and price', () => {
     expect(fixedCostPerHour(state)).toBeCloseTo(currentLocation(state).rentPerHour + state.spaces * 0.06, 6);
     expect(profitPerHour(state)).toBeCloseTo(revenuePerHour(state) - fixedCostPerHour(state), 6);
     // Fixed costs grow with spaces, running upgrades and the rent of the location.
-    expect(fixedCostPerHour({ ...state, spaces: 20 })).toBeGreaterThan(fixedCostPerHour(state));
+    expect(fixedCostPerHour({ ...state, spaces: state.spaces * 10 })).toBeGreaterThan(fixedCostPerHour(state));
     expect(fixedCostPerHour(withLevel(state, 'cleaning', 3))).toBeGreaterThan(fixedCostPerHour(state));
     expect(fixedCostPerHour(withLevel(state, 'location', 3))).toBeGreaterThan(fixedCostPerHour(state) * 10);
   });
 
   it('lets a cashier cost more than he collects on a tiny lot', () => {
-    const tiny = freshState();
+    const tiny = { ...freshState(), spaces: 1 };
     const withCashier = withLevel(tiny, 'payment', 1);
     expect(revenuePerHour(withCashier)).toBeGreaterThan(revenuePerHour(tiny));
     expect(profitPerHour(withCashier)).toBeLessThan(profitPerHour(tiny));
 
     // At a busy location with a big lot the same salary pays for itself.
-    const big = { ...withLevel(tiny, 'location', 3), spaces: 40 };
+    const big = { ...withLevel(tiny, 'location', 3), spaces: 400 };
     expect(profitPerHour(withLevel(big, 'payment', 1))).toBeGreaterThan(profitPerHour(big));
   });
 
@@ -166,9 +171,9 @@ describe('supply, demand and price', () => {
     expect(occupancy(crowded)).toBe(1);
     expect(turnedAwayShare(crowded)).toBeGreaterThan(0);
 
-    const roomy = { ...crowded, spaces: 12 };
-    expect(occupancy(roomy)).toBeLessThan(1);
-    expect(turnedAwayShare(roomy)).toBe(0);
+    const spacious = roomy(crowded);
+    expect(occupancy(spacious)).toBeLessThan(1);
+    expect(turnedAwayShare(spacious)).toBe(0);
   });
 
   it('derives the optimal price from supply and demand instead of a fixed value', () => {
@@ -176,7 +181,7 @@ describe('supply, demand and price', () => {
     const base = marketPrice(state);
 
     // More supply at the same demand clears at a lower price …
-    expect(marketPrice({ ...state, spaces: 8 })).toBeLessThan(base);
+    expect(marketPrice({ ...state, spaces: state.spaces * 4 })).toBeLessThan(base);
     // … more demand or a higher willingness to pay at a higher one.
     expect(marketPrice(withLevel(state, 'advertising', 3))).toBeGreaterThan(base);
     expect(marketPrice(withLevel(state, 'shelter', 3))).toBeGreaterThan(base);
@@ -191,7 +196,7 @@ describe('supply, demand and price', () => {
   });
 
   it('caps demand at the catchment area, so huge lots stay half empty', () => {
-    const oversized = { ...freshState(), spaces: 40 };
+    const oversized = roomy(freshState(), 4);
     const floorPrice = marketPrice(oversized);
     expect(demandAt(oversized, floorPrice)).toBeLessThan(oversized.spaces);
     // Below that price the guests do not multiply any further – only the takings shrink.
@@ -209,8 +214,8 @@ describe('supply, demand and price', () => {
       return best;
     };
 
-    const small = { ...freshState(), spaces: 2 };
-    const large = { ...small, spaces: 20 };
+    const small = { ...freshState(), spaces: 4 };
+    const large = { ...small, spaces: 400 };
     expect(bestPrice(small)).toBeCloseTo(marketPrice(small), 1);
     expect(bestPrice(large)).toBeCloseTo(marketPrice(large), 1);
     expect(bestPrice(large)).toBeLessThan(bestPrice(small));
@@ -219,9 +224,9 @@ describe('supply, demand and price', () => {
 
 describe('upgrades', () => {
   it('buys a space and spreads the same demand over more of them', () => {
-    const state = { ...freshState(), cash: 50 };
+    const state = { ...roomy(freshState()), cash: 50 };
     const next = buyUpgrade(state, 'spaces');
-    expect(next.spaces).toBe(2);
+    expect(next.spaces).toBe(state.spaces + SPACES_PER_UPGRADE);
     expect(occupancy(next)).toBeLessThan(occupancy(state));
     expect(demand(next)).toBeCloseTo(demand(state), 9);
     expect(next.cash).toBe(state.cash - upgradeCost(spaceUpgrade, 0));
@@ -244,7 +249,7 @@ describe('upgrades', () => {
 
   it('allows unlimited space upgrades', () => {
     const state = { ...freshState(), cash: Number.MAX_SAFE_INTEGER };
-    expect(buyUpgrade(withLevel(state, 'spaces', 100), 'spaces').spaces).toBe(2);
+    expect(buyUpgrade(withLevel(state, 'spaces', 100), 'spaces').spaces).toBe(state.spaces + SPACES_PER_UPGRADE);
   });
 
   it('lets demand upgrades attract more guests', () => {
@@ -376,37 +381,41 @@ describe('incidents only hit what exists', () => {
     expect(possibleIncidents(equipped)).toContain('payment');
   });
 
-  it('prices a repair in hours of takings, not in a fixed sum', () => {
+  it('prices a repair in minutes of takings, not as a fixed sum', () => {
     const small = breakSomething(freshState());
-    expect(small.activeIncident!.repairCost).toBeLessThan(5);
+    // A couple of minutes of what the lot can take in.
+    expect(small.activeIncident!.repairCost).toBeLessThanOrEqual(earningPower(small) / 10);
     expect(small.activeIncident!.repairCost).toBeGreaterThan(0);
 
-    const big = breakSomething({ ...freshState(), spaces: 30, levels: { ...INITIAL_STATE.levels, location: 2, spaces: 29 } });
-    expect(big.activeIncident!.repairCost).toBeGreaterThan(small.activeIncident!.repairCost * 20);
-    // Still affordable: about an hour or two of what the lot can take in.
-    expect(big.activeIncident!.repairCost).toBeLessThan(earningPower(big) * 3);
+    const big = breakSomething({ ...freshState(), spaces: 300, levels: { ...INITIAL_STATE.levels, location: 2 } });
+    expect(big.activeIncident!.repairCost).toBeGreaterThan(small.activeIncident!.repairCost * 3);
+    expect(big.activeIncident!.repairCost).toBeLessThan(earningPower(big) / 10);
   });
 
   it('scales maintenance with the lot instead of a flat fee', () => {
-    const small = freshState();
-    expect(maintenanceCost(small)).toBeLessThan(5);
-    expect(maintenanceCost({ ...small, spaces: 30 })).toBeGreaterThan(maintenanceCost(small));
+    const base = freshState();
+    const bigger = { ...withLevel(base, 'location', 2), spaces: 300 };
+    expect(maintenanceCost(bigger)).toBeGreaterThan(maintenanceCost(base) * 3);
+    // Exactly a minute of what the lot can take in.
+    expect(maintenanceCost(bigger)).toBe(Math.round(earningPower(bigger) / 60));
+    // Never a fortune: well below an hour of what the lot takes in.
+    expect(maintenanceCost(base)).toBeLessThan(earningPower(base));
   });
 });
 
 describe('away progress', () => {
   it('counts absence on the same clock as playing', () => {
-    const state = { ...freshState(), spaces: 4 };
-    // One real minute is MINUTES_PER_SECOND * 60 game minutes.
+    const state = freshState();
+    // Game time is real time: one real minute is one game minute.
     const report = simulateAway(state, 1);
-    expect(report.gameHours).toBeCloseTo(2, 6);
+    expect(report.gameHours).toBeCloseTo(1 / 60, 9);
     expect(report.revenue).toBeGreaterThan(0);
     expect(report.state.day).toBe(state.day);
-    expect(report.state.minuteOfDay).toBeCloseTo(state.minuteOfDay + 120, 6);
+    expect(report.state.minuteOfDay).toBeCloseTo(state.minuteOfDay + 1, 9);
   });
 
   it('earns roughly what an attended hour of play earns, minus the missing supervision', () => {
-    const state = { ...freshState(), spaces: 4, price: 3 };
+    const state = { ...freshState(), price: 3 };
     const played = profitPerSecond(state) * 600;
     const away = simulateAway(state, 10).earned;
     expect(away).toBeGreaterThan(played * 0.2);
@@ -424,14 +433,14 @@ describe('away progress', () => {
   });
 
   it('keeps the account from going into debt while away', () => {
-    const bleeding = { ...freshState(), cash: 2, spaces: 30, price: 0.2, levels: { ...INITIAL_STATE.levels, location: 3, spaces: 29 } };
+    const bleeding = { ...freshState(), cash: 2, spaces: 300, price: 0.2, levels: { ...INITIAL_STATE.levels, location: 3 } };
     const report = simulateAway(bleeding, 120);
     expect(report.earned).toBeLessThan(0);
     expect(report.state.cash).toBe(0);
   });
 
   it('lets the price throttle away income as well', () => {
-    const state = { ...freshState(), spaces: 6, lastSavedAt: 0 };
+    const state = { ...roomy(freshState()), lastSavedAt: 0 };
     const normal = calculateOfflineProgress(state, 60 * 60_000);
     const dearer = calculateOfflineProgress({ ...state, price: 30 }, 60 * 60_000);
     expect(dearer.earned).toBeLessThan(normal.earned);

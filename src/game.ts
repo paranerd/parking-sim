@@ -7,8 +7,6 @@ export interface GameState {
   lifetimeRevenue: number;
   /** Capacity: how many cars can stand on the lot at the same time. */
   spaces: number;
-  /** Share of the capacity that is taken, 0…1 – a continuous quantity. */
-  occupancy: number;
   price: number;
   reputation: number;
   levels: Record<UpgradeId, number>;
@@ -79,7 +77,6 @@ export const INITIAL_STATE: GameState = {
   cash: 0,
   lifetimeRevenue: 0,
   spaces: 1,
-  occupancy: 0.8,
   price: 2.5,
   reputation: 3.6,
   levels: { location: 0, spaces: 0, lighting: 0, cleaning: 0, advertising: 0, payment: 0, shelter: 0 },
@@ -121,11 +118,6 @@ export const upgradeCost = (upgrade: Upgrade, level: number): number => {
   return raw < 100 ? Math.round(raw) : Math.round(raw / 10) * 10;
 };
 
-export const timeOfDayFactor = (minuteOfDay: number): number => {
-  const hour = minuteOfDay / 60;
-  return hour >= 7 && hour <= 10 ? 1.25 : hour >= 16 && hour <= 19 ? 1.35 : hour >= 22 || hour <= 5 ? 0.45 : 0.85;
-};
-
 export const paymentStage = (state: GameState): typeof PAYMENT_STAGES[number] =>
   PAYMENT_STAGES[Math.min(state.levels.payment, PAYMENT_STAGES.length - 1)];
 
@@ -149,12 +141,11 @@ export const reputationFactor = (state: GameState): number => Math.max(0.25, 0.6
 
 /**
  * How many cars want to park here before the price enters the picture:
- * the base demand of the location, shaped by daytime, reviews and equipment.
+ * the base demand of the location, shaped by reviews and equipment.
  */
 export const attraction = (state: GameState): number => {
   const incidentPenalty = state.activeIncident && state.activeIncident.id !== 'payment' ? 0.8 : 1;
-  return currentLocation(state).baseDemand * equipmentFactor(state) * incidentPenalty
-    * reputationFactor(state) * timeOfDayFactor(state.minuteOfDay);
+  return currentLocation(state).baseDemand * equipmentFactor(state) * incidentPenalty * reputationFactor(state);
 };
 
 /** Even a free lot only draws the guests that pass by – the catchment limit. */
@@ -182,8 +173,11 @@ export const marketPrice = (state: GameState): number => {
   return willingnessToPay(state) / required ** (1 / PRICE_ELASTICITY);
 };
 
-/** Occupancy the lot drifts towards: demand, capped by the capacity. */
-export const targetOccupancy = (state: GameState): number => Math.min(1, demand(state) / Math.max(1, state.spaces));
+/**
+ * Share of the capacity that is taken – demand, capped at a full lot. It
+ * follows the price without delay, so a new tariff shows in the profit at once.
+ */
+export const occupancy = (state: GameState): number => Math.min(1, demand(state) / Math.max(1, state.spaces));
 
 /** Share of interested guests that finds no free space. */
 export const turnedAwayShare = (state: GameState): number => {
@@ -199,9 +193,9 @@ export const targetReputation = (state: GameState): number => {
   return clamp(3.4 + upgradeBonus - congestion - (state.activeIncident ? 0.4 : 0), 1, 5);
 };
 
-/** Revenue per game hour: price × spaces × occupancy (max 100 %) × payment rate. */
+/** Revenue per game hour: price × spaces × demand (max 100 %) × payment rate. */
 export const revenuePerHour = (state: GameState): number =>
-  state.price * state.spaces * state.occupancy * paymentRate(state);
+  state.price * state.spaces * occupancy(state) * paymentRate(state);
 
 /** Rent, upkeep of the spaces and everything that runs on staff or power. */
 export const fixedCostPerHour = (state: GameState): number => {
@@ -231,7 +225,6 @@ export const profitPerMinute = (state: GameState): number => profitPerHour(state
 export const profitPerSecond = (state: GameState): number => profitPerMinute(state) * MINUTES_PER_SECOND;
 
 /** Time constants in real-time seconds. */
-const OCCUPANCY_TAU = 5;
 const REPUTATION_TAU = 120;
 const CONDITION_WEAR_PER_MINUTE = 0.0035;
 
@@ -254,18 +247,11 @@ export const advanceTime = (state: GameState, seconds: number): GameState => {
     next.day += 1;
   }
 
-  const before = next.occupancy;
-  next.occupancy = clamp(before + (targetOccupancy(next) - before) * ease(seconds, OCCUPANCY_TAU), 0, 1);
-  // Bill the average occupancy of the slice, so the result does not depend on
-  // how finely the elapsed time is chopped up.
-  const average = (before + next.occupancy) / 2;
-
-  const billed = { ...next, occupancy: average };
   // The fixed costs run whether or not a single car shows up, but the account
   // stops at zero – an empty till cannot go into debt.
-  next.cash = Math.max(0, next.cash + profitPerMinute(billed) * minutes);
-  next.lifetimeRevenue += revenuePerHour(billed) / 60 * minutes;
-  next.carsServed += average * next.spaces * (minutes / 60) / AVERAGE_STAY_HOURS;
+  next.cash = Math.max(0, next.cash + profitPerMinute(next) * minutes);
+  next.lifetimeRevenue += revenuePerHour(next) / 60 * minutes;
+  next.carsServed += occupancy(next) * next.spaces * (minutes / 60) / AVERAGE_STAY_HOURS;
 
   next.reputation += (targetReputation(next) - next.reputation) * ease(seconds, REPUTATION_TAU);
   next.condition = Math.max(20, next.condition - CONDITION_WEAR_PER_MINUTE * minutes * (1 + next.spaces / 20));
@@ -310,7 +296,7 @@ export const possibleIncidents = (state: GameState): IncidentId[] =>
 export const earningPower = (state: GameState): number => {
   const price = marketPrice(state);
   const priced = { ...state, price };
-  return revenuePerHour({ ...priced, occupancy: targetOccupancy(priced) });
+  return revenuePerHour(priced);
 };
 
 /** A repair costs a couple of hours of takings – never a fixed sum. */
@@ -345,8 +331,6 @@ export const buyUpgrade = (state: GameState, id: UpgradeId): GameState => {
   next.levels[id] += 1;
   if (id === 'spaces') {
     next.spaces += 1;
-    // The new space is empty, so the occupied share drops right away.
-    next.occupancy = clamp(next.occupancy * (next.spaces - 1) / next.spaces, 0, 1);
     next.condition = Math.min(100, next.condition + 4);
   }
   return next;
@@ -412,17 +396,15 @@ export const simulateAway = (state: GameState, realMinutes: number): AwayReport 
   const gameHours = minutes * 60 * MINUTES_PER_SECOND / 60;
   const attendedShare = Math.min(1, 0.4 + state.levels.payment * 0.1);
 
-  const occupancy = targetOccupancy(state);
-  const settled = { ...state, occupancy };
-  const revenue = revenuePerHour(settled) * gameHours * attendedShare;
-  const costs = fixedCostPerHour(settled) * gameHours;
+  const filled = occupancy(state);
+  const revenue = revenuePerHour(state) * gameHours * attendedShare;
+  const costs = fixedCostPerHour(state) * gameHours;
   const earned = revenue - costs;
 
   const next = structuredClone(state);
   next.cash = Math.max(0, next.cash + earned);
   next.lifetimeRevenue += revenue;
-  next.occupancy = occupancy;
-  next.carsServed += occupancy * next.spaces * gameHours / AVERAGE_STAY_HOURS;
+  next.carsServed += filled * next.spaces * gameHours / AVERAGE_STAY_HOURS;
 
   const totalMinutes = next.minuteOfDay + gameHours * 60;
   next.minuteOfDay = totalMinutes % 1440;
@@ -441,8 +423,8 @@ export const simulateAway = (state: GameState, realMinutes: number): AwayReport 
     revenue,
     costs,
     earned,
-    cars: occupancy * next.spaces * gameHours / AVERAGE_STAY_HOURS,
-    occupancy,
+    cars: filled * next.spaces * gameHours / AVERAGE_STAY_HOURS,
+    occupancy: filled,
     attendedShare,
   };
 };

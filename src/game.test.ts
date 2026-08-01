@@ -28,7 +28,7 @@ import {
   revenuePerHour,
   simulateAway,
   simulateTick,
-  targetOccupancy,
+  occupancy,
   targetReputation,
   turnedAwayShare,
   UpgradeId,
@@ -72,17 +72,18 @@ describe('continuous operation', () => {
     const single = advanceTime(state, 1);
     let sliced = state;
     for (let index = 0; index < 20; index += 1) sliced = advanceTime(sliced, 0.05);
-    expect(sliced.cash).toBeCloseTo(single.cash, 3);
-    expect(sliced.occupancy).toBeCloseTo(single.occupancy, 3);
+    expect(sliced.cash).toBeCloseTo(single.cash, 6);
   });
 
-  it('lets occupancy glide towards its target instead of jumping', () => {
-    const state = { ...freshState(), occupancy: 0.1 };
-    const target = targetOccupancy(state);
-    const short = advanceTime(state, 1);
-    expect(short.occupancy).toBeGreaterThan(state.occupancy);
-    expect(short.occupancy).toBeLessThan(target);
-    expect(run(state, 60).occupancy).toBeCloseTo(target, 2);
+  it('follows a price change without any delay', () => {
+    const state = { ...freshState(), spaces: 6 };
+    const before = occupancy(state);
+    const dearer = { ...state, price: state.price * 2 };
+    // No easing, no lag: the new price is in the occupancy and in the profit
+    // of the very same state object.
+    expect(occupancy(dearer)).toBeLessThan(before);
+    expect(profitPerHour(dearer)).not.toBeCloseTo(profitPerHour(state), 4);
+    expect(revenuePerHour(dearer)).toBeCloseTo(dearer.price * dearer.spaces * occupancy(dearer) * paymentRate(dearer), 9);
   });
 
   it('moves to the next day after midnight', () => {
@@ -102,20 +103,28 @@ describe('continuous operation', () => {
     const next = simulateTick(state, () => 1);
     expect(next.cash).toBe(state.cash);
     expect(next.minuteOfDay).toBe(state.minuteOfDay);
-    expect(next.occupancy).toBe(state.occupancy);
+    expect(revenuePerHour(next)).toBeCloseTo(revenuePerHour(state), 9);
   });
 });
 
 describe('supply, demand and price', () => {
   it('follows the agreed formula: price x spaces x demand x payment rate', () => {
-    const state = { ...freshState(), occupancy: 0.7, spaces: 1, price: 2.5 };
-    // Szenario 1 of the spec: (2,50 x 1 x 0,7 x 0,55) - 0 = 0,963 EUR/h
-    const free = { ...state, levels: { ...state.levels, spaces: 0 } };
-    expect(revenuePerHour(free)).toBeCloseTo(0.9625, 4);
-    expect(revenuePerHour(free) - fixedCostPerHour(free)).toBeCloseTo(profitPerHour(free), 6);
+    const state = freshState();
+    expect(revenuePerHour(state)).toBeCloseTo(state.price * state.spaces * occupancy(state) * paymentRate(state), 9);
+    expect(profitPerHour(state)).toBeCloseTo(revenuePerHour(state) - fixedCostPerHour(state), 9);
 
-    // Szenario 2: the same at two spaces is exactly twice as much revenue.
-    expect(revenuePerHour({ ...free, spaces: 2 })).toBeCloseTo(1.925, 4);
+    // Szenario 1 of the spec: at 70 % demand and 55 % payment rate a space at
+    // 2,50 EUR brings 0,963 EUR/h.
+    const share = 0.7;
+    const seventy = { ...state, price: 2.5, spaces: demandAt(state, 2.5) / share };
+    expect(occupancy(seventy)).toBeCloseTo(share, 9);
+    expect(revenuePerHour(seventy) / seventy.spaces).toBeCloseTo(0.9625, 6);
+
+    // Szenario 2: at the same demand share, twice the capacity is twice the
+    // revenue – here with demand well above both lot sizes.
+    const busy = withLevel(state, 'location', 1);
+    expect(occupancy({ ...busy, spaces: 2 })).toBe(1);
+    expect(revenuePerHour({ ...busy, spaces: 2 })).toBeCloseTo(revenuePerHour({ ...busy, spaces: 1 }) * 2, 9);
   });
 
   it('subtracts the fixed costs from the revenue', () => {
@@ -129,13 +138,13 @@ describe('supply, demand and price', () => {
   });
 
   it('lets a cashier cost more than he collects on a tiny lot', () => {
-    const tiny = { ...freshState(), occupancy: 1 };
+    const tiny = freshState();
     const withCashier = withLevel(tiny, 'payment', 1);
     expect(revenuePerHour(withCashier)).toBeGreaterThan(revenuePerHour(tiny));
     expect(profitPerHour(withCashier)).toBeLessThan(profitPerHour(tiny));
 
-    // On a big lot the same salary pays for itself many times over.
-    const big = { ...tiny, spaces: 40 };
+    // At a busy location with a big lot the same salary pays for itself.
+    const big = { ...withLevel(tiny, 'location', 3), spaces: 40 };
     expect(profitPerHour(withLevel(big, 'payment', 1))).toBeGreaterThan(profitPerHour(big));
   });
 
@@ -154,11 +163,11 @@ describe('supply, demand and price', () => {
   it('turns capacity into supply that caps the occupancy', () => {
     const crowded = { ...freshState(), spaces: 1 };
     expect(demand(crowded)).toBeGreaterThan(crowded.spaces);
-    expect(targetOccupancy(crowded)).toBe(1);
+    expect(occupancy(crowded)).toBe(1);
     expect(turnedAwayShare(crowded)).toBeGreaterThan(0);
 
     const roomy = { ...crowded, spaces: 12 };
-    expect(targetOccupancy(roomy)).toBeLessThan(1);
+    expect(occupancy(roomy)).toBeLessThan(1);
     expect(turnedAwayShare(roomy)).toBe(0);
   });
 
@@ -209,11 +218,12 @@ describe('supply, demand and price', () => {
 });
 
 describe('upgrades', () => {
-  it('buys a space and dilutes the occupied share', () => {
-    const state = { ...freshState(), cash: 50, occupancy: 1 };
+  it('buys a space and spreads the same demand over more of them', () => {
+    const state = { ...freshState(), cash: 50 };
     const next = buyUpgrade(state, 'spaces');
     expect(next.spaces).toBe(2);
-    expect(next.occupancy).toBeCloseTo(0.5);
+    expect(occupancy(next)).toBeLessThan(occupancy(state));
+    expect(demand(next)).toBeCloseTo(demand(state), 9);
     expect(next.cash).toBe(state.cash - upgradeCost(spaceUpgrade, 0));
   });
 
@@ -386,7 +396,7 @@ describe('incidents only hit what exists', () => {
 
 describe('away progress', () => {
   it('counts absence on the same clock as playing', () => {
-    const state = { ...freshState(), spaces: 4, occupancy: 1 };
+    const state = { ...freshState(), spaces: 4 };
     // One real minute is MINUTES_PER_SECOND * 60 game minutes.
     const report = simulateAway(state, 1);
     expect(report.gameHours).toBeCloseTo(2, 6);
@@ -396,8 +406,8 @@ describe('away progress', () => {
   });
 
   it('earns roughly what an attended hour of play earns, minus the missing supervision', () => {
-    const state = { ...freshState(), spaces: 4, occupancy: 1, price: 3 };
-    const played = profitPerSecond({ ...state, occupancy: targetOccupancy(state) }) * 600;
+    const state = { ...freshState(), spaces: 4, price: 3 };
+    const played = profitPerSecond(state) * 600;
     const away = simulateAway(state, 10).earned;
     expect(away).toBeGreaterThan(played * 0.2);
     expect(away).toBeLessThan(played);

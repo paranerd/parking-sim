@@ -37,8 +37,6 @@ const migrate = (raw: Record<string, unknown>): GameState => {
     cash: Math.max(0, number(raw.cash, base.cash)),
     lifetimeRevenue: Math.max(0, number(raw.lifetimeRevenue, base.lifetimeRevenue)),
     spaces,
-    // Saves before the continuous model counted occupied spaces instead.
-    occupancy: Math.min(1, Math.max(0, number(raw.occupancy, number(raw.occupied, base.occupancy * spaces) / spaces))),
     price: Math.max(0, number(raw.price, base.price)),
     reputation: Math.min(5, Math.max(1, number(raw.reputation, base.reputation))),
     levels,

@@ -8,8 +8,10 @@ import {
   demand,
   demandAt,
   GameState,
-  incomePerSecond,
+  currentLocation,
+  fixedCostPerHour,
   INITIAL_STATE,
+  LOCATIONS,
   maintenanceCost,
   marketPrice,
   MAX_DEMAND_FACTOR,
@@ -19,6 +21,8 @@ import {
   performMaintenance,
   PRICE_STEP,
   repairIncident,
+  profitPerHour,
+  profitPerSecond,
   revenuePerHour,
   simulateTick,
   targetOccupancy,
@@ -38,6 +42,8 @@ const run = (state: GameState, seconds: number, stepSize = 0.5): GameState => {
   for (let elapsed = 0; elapsed < seconds; elapsed += stepSize) current = advanceTime(current, stepSize);
   return current;
 };
+
+const spaceUpgrade = upgrades.find((upgrade) => upgrade.id === 'spaces')!;
 
 const withLevel = (state: GameState, id: UpgradeId, level: number): GameState =>
   ({ ...state, levels: { ...state.levels, [id]: level } });
@@ -83,9 +89,9 @@ describe('continuous operation', () => {
     expect(next.minuteOfDay).toBe(1);
   });
 
-  it('reports the revenue of one real-time second as profit per second', () => {
+  it('reports the profit of one real-time second', () => {
     const state = freshState();
-    expect(incomePerSecond(state)).toBeCloseTo(revenuePerHour(state) / 60 * MINUTES_PER_SECOND);
+    expect(profitPerSecond(state)).toBeCloseTo(profitPerHour(state) / 60 * MINUTES_PER_SECOND);
   });
 
   it('leaves the money untouched during an event tick', () => {
@@ -98,10 +104,36 @@ describe('continuous operation', () => {
 });
 
 describe('supply, demand and price', () => {
-  it('raises revenue from capacity, demand, price and payment rate', () => {
-    const state = { ...freshState(), occupancy: 0.5, spaces: 4, price: 3 };
-    expect(revenuePerHour(state)).toBeCloseTo(0.5 * 4 * 3 * paymentRate(state));
-    expect(revenuePerHour({ ...state, spaces: 8 })).toBeCloseTo(revenuePerHour(state) * 2);
+  it('follows the agreed formula: price x spaces x demand x payment rate', () => {
+    const state = { ...freshState(), occupancy: 0.7, spaces: 1, price: 2.5 };
+    // Szenario 1 of the spec: (2,50 x 1 x 0,7 x 0,55) - 0 = 0,963 EUR/h
+    const free = { ...state, levels: { ...state.levels, spaces: 0 } };
+    expect(revenuePerHour(free)).toBeCloseTo(0.9625, 4);
+    expect(revenuePerHour(free) - fixedCostPerHour(free)).toBeCloseTo(profitPerHour(free), 6);
+
+    // Szenario 2: the same at two spaces is exactly twice as much revenue.
+    expect(revenuePerHour({ ...free, spaces: 2 })).toBeCloseTo(1.925, 4);
+  });
+
+  it('subtracts the fixed costs from the revenue', () => {
+    const state = freshState();
+    expect(fixedCostPerHour(state)).toBeCloseTo(currentLocation(state).rentPerHour + state.spaces * 0.06, 6);
+    expect(profitPerHour(state)).toBeCloseTo(revenuePerHour(state) - fixedCostPerHour(state), 6);
+    // Fixed costs grow with spaces, running upgrades and the rent of the location.
+    expect(fixedCostPerHour({ ...state, spaces: 20 })).toBeGreaterThan(fixedCostPerHour(state));
+    expect(fixedCostPerHour(withLevel(state, 'cleaning', 3))).toBeGreaterThan(fixedCostPerHour(state));
+    expect(fixedCostPerHour(withLevel(state, 'location', 3))).toBeGreaterThan(fixedCostPerHour(state) * 10);
+  });
+
+  it('lets a cashier cost more than he collects on a tiny lot', () => {
+    const tiny = { ...freshState(), occupancy: 1 };
+    const withCashier = withLevel(tiny, 'payment', 1);
+    expect(revenuePerHour(withCashier)).toBeGreaterThan(revenuePerHour(tiny));
+    expect(profitPerHour(withCashier)).toBeLessThan(profitPerHour(tiny));
+
+    // On a big lot the same salary pays for itself many times over.
+    const big = { ...tiny, spaces: 40 };
+    expect(profitPerHour(withLevel(big, 'payment', 1))).toBeGreaterThan(profitPerHour(big));
   });
 
   it('lowers demand for every price increase and raises it for every cut', () => {
@@ -179,7 +211,22 @@ describe('upgrades', () => {
     const next = buyUpgrade(state, 'spaces');
     expect(next.spaces).toBe(2);
     expect(next.occupancy).toBeCloseTo(0.5);
-    expect(next.cash).toBe(state.cash - upgradeCost(upgrades[0], 0));
+    expect(next.cash).toBe(state.cash - upgradeCost(spaceUpgrade, 0));
+  });
+
+  it('moves up the location chain and raises the base demand', () => {
+    const state = { ...freshState(), cash: 100_000 };
+    expect(currentLocation(state).name).toBe('Vorstadt');
+    const moved = buyUpgrade(state, 'location');
+    expect(currentLocation(moved).name).toBe(LOCATIONS[1].name);
+    expect(demand(moved)).toBeGreaterThan(demand(state) * 2);
+    // The better spot also carries a higher tariff and a higher rent.
+    expect(willingnessToPay(moved)).toBeGreaterThan(willingnessToPay(state));
+    expect(fixedCostPerHour(moved)).toBeGreaterThan(fixedCostPerHour(state));
+
+    const airport = LOCATIONS.reduce((current) => buyUpgrade(current, 'location'), state);
+    expect(currentLocation(airport).name).toBe('Flughafen');
+    expect(buyUpgrade(airport, 'location').levels.location).toBe(3);
   });
 
   it('allows unlimited space upgrades', () => {
@@ -218,10 +265,9 @@ describe('upgrades', () => {
   });
 
   it('rounds small costs to euros and large ones to tens', () => {
-    const spaces = upgrades[0];
-    expect(upgradeCost(spaces, 0)).toBe(10);
-    expect(upgradeCost(spaces, 1)).toBe(11);
-    expect(upgradeCost(spaces, 30) % 10).toBe(0);
+    expect(upgradeCost(spaceUpgrade, 0)).toBe(10);
+    expect(upgradeCost(spaceUpgrade, 1)).toBe(11);
+    expect(upgradeCost(spaceUpgrade, 30) % 10).toBe(0);
   });
 });
 

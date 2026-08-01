@@ -3,6 +3,29 @@
 Ein webbasiertes Idle- und Managementspiel, in dem aus einem unbefestigten
 Parkplatz Schritt für Schritt ein automatisiertes Parkhaus-Imperium entsteht.
 
+## Spielen und entwickeln
+
+Der spielbare MVP ist mit TypeScript, SCSS und Vite umgesetzt. Fahrzeuge kommen
+und gehen in Echtzeit, Investitionen verändern Kapazität und Einnahmen, Anlagen
+können ausfallen und der Spielstand wird lokal inklusive Offline-Ertrag gespeichert.
+
+```bash
+npm install
+npm run dev
+```
+
+Tests und Produktions-Build:
+
+```bash
+npm test
+npm run build
+```
+
+Der Workflow `.github/workflows/deploy.yml` testet und baut die Anwendung bei
+jedem Push auf `main` oder `work` und veröffentlicht `dist` über GitHub Pages.
+In den Repository-Einstellungen muss unter **Pages → Source** einmalig
+**GitHub Actions** ausgewählt werden.
+
 ## Warum die Idee funktioniert
 
 Das Thema passt sehr gut zu einem Idle-Spiel: Jeder Stellplatz ist zugleich ein

@@ -78,22 +78,24 @@ export const incomePerMinute = (state: GameState): number => {
   return state.occupied * (state.price / 60) * comfort * incidentPenalty;
 };
 
-/** The simulation advances two game minutes on every one-second tick. */
-export const incomePerSecond = (state: GameState): number => incomePerMinute(state) * 2;
+/** Game minutes that pass during one real-time second. */
+export const MINUTES_PER_SECOND = 2;
 
-export const setHourlyPrice = (state: GameState, price: number): GameState => {
-  if (!Number.isFinite(price) || price < 0 || price === state.price) return state;
+/** Step of a single price adjustment in euros. */
+export const PRICE_STEP = 0.1;
+
+export const incomePerSecond = (state: GameState): number => incomePerMinute(state) * MINUTES_PER_SECOND;
+
+/**
+ * Advances the clock and books revenue for an arbitrary slice of real time so
+ * cash grows continuously instead of jumping once per tick.
+ */
+export const advanceTime = (state: GameState, seconds: number): GameState => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return state;
   const next = structuredClone(state);
-  next.price = Math.round(price * 100) / 100;
-  next.log.unshift(`Der Stundenpreis wurde auf ${next.price.toLocaleString('de-DE')} € gesetzt.`);
-  return next;
-};
-
-export const simulateTick = (state: GameState, random = Math.random): GameState => {
-  const next: GameState = structuredClone(state);
-  const minutes = 2;
+  const minutes = seconds * MINUTES_PER_SECOND;
   next.minuteOfDay += minutes;
-  if (next.minuteOfDay >= 1440) {
+  while (next.minuteOfDay >= 1440) {
     next.minuteOfDay -= 1440;
     next.day += 1;
   }
@@ -101,6 +103,33 @@ export const simulateTick = (state: GameState, random = Math.random): GameState 
   const earned = incomePerMinute(next) * minutes;
   next.cash += earned;
   next.lifetimeRevenue += earned;
+  return next;
+};
+
+export const setHourlyPrice = (state: GameState, price: number): GameState => {
+  if (!Number.isFinite(price) || price < 0) return state;
+  const rounded = Math.round(price * 100) / 100;
+  if (rounded === state.price) return state;
+
+  const next = structuredClone(state);
+  next.price = rounded;
+  const message = `Der Stundenpreis wurde auf ${next.price.toLocaleString('de-DE', { minimumFractionDigits: 2 })} € gesetzt.`;
+  // Stepping the price repeatedly should not flood the chronicle.
+  if (next.log[0]?.startsWith('Der Stundenpreis')) next.log[0] = message;
+  else next.log.unshift(message);
+  return next;
+};
+
+/** Raises or lowers the hourly price by whole `PRICE_STEP` steps, never below zero. */
+export const adjustHourlyPrice = (state: GameState, steps: number): GameState =>
+  setHourlyPrice(state, Math.max(0, state.price + steps * PRICE_STEP));
+
+/**
+ * Discrete events of one real-time second: arrivals, departures, wear and
+ * incidents. Revenue and the clock are handled by `advanceTime`.
+ */
+export const simulateTick = (state: GameState, random = Math.random): GameState => {
+  const next: GameState = structuredClone(state);
 
   const gateSpeed = 0.13 + next.levels.gate * 0.045 + next.levels.automation * 0.07;
   if (next.occupied < next.spaces && random() < gateSpeed * demandFactor(next)) next.occupied += 1;

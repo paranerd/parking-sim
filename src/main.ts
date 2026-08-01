@@ -1,12 +1,14 @@
 import './styles.scss';
 import {
+  adjustHourlyPrice,
+  advanceTime,
   buyUpgrade,
   GameState,
   incomePerSecond,
   maintenanceCost,
   performMaintenance,
+  PRICE_STEP,
   repairIncident,
-  setHourlyPrice,
   simulateTick,
   UpgradeId,
   upgradeCost,
@@ -24,6 +26,7 @@ let muted = false;
 let showOfflineModal = loaded.offlineEarned > 0.05;
 
 const money = (value: number): string => `${value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+const profitPerSecond = (game: GameState): string => `+ ${money(incomePerSecond(game))}`;
 const clock = (minutes: number): string => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
 const percent = (value: number): string => `${Math.round(value)}%`;
 
@@ -34,7 +37,16 @@ const parkedCars = (game: GameState): string => Array.from({ length: game.spaces
   return `<div class="parking-space ${occupied ? 'occupied' : ''}"><span>${index + 1}</span>${occupied ? `<div class="car ${color}"><i></i><b></b></div>` : ''}</div>`;
 }).join('');
 
+/** Selector of the focused control so keyboard focus survives a re-render. */
+const focusedSelector = (): string | null => {
+  const element = document.activeElement as HTMLElement | null;
+  if (!element || !app.contains(element)) return null;
+  const key = (['priceStep', 'upgrade', 'action', 'filter'] as const).find((name) => element.dataset[name]);
+  return key ? `[data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${element.dataset[key]}"]` : null;
+};
+
 const render = (): void => {
+  const restoreFocus = focusedSelector();
   const occupancy = state.spaces ? state.occupied / state.spaces * 100 : 0;
   const filtered = upgrades.filter((upgrade) => selectedCategory === 'Alle' || upgrade.category === selectedCategory);
   const buildProgress = Math.min(100, state.spaces / 50 * 100);
@@ -44,8 +56,8 @@ const render = (): void => {
     <header class="topbar">
       <a class="brand" href="#" aria-label="Parking Empire Startseite"><span class="brand-mark">P</span><strong>Parking<br><em>Empire</em></strong></a>
       <div class="header-stats">
-        <div><span>KONTOSTAND</span><strong>${money(state.cash)}</strong></div>
-        <div><span>GEWINN / SEK.</span><strong class="positive">+ ${money(incomePerSecond(state))}</strong></div>
+        <div><span>KONTOSTAND</span><strong data-live="cash">${money(state.cash)}</strong></div>
+        <div><span>GEWINN / SEK.</span><strong class="positive" data-live="rate">${profitPerSecond(state)}</strong></div>
         <div><span>AUSLASTUNG</span><strong>${state.occupied} / ${state.spaces}</strong></div>
       </div>
       <div class="header-actions">
@@ -60,7 +72,7 @@ const render = (): void => {
         <div class="parking-card">
           <div class="scene-head">
             <div><span class="eyebrow">DEIN STANDORT</span><h1>Sonnenallee 24</h1><p>Vorstadt · Stufe ${Math.max(1, Math.ceil(state.spaces / 15))}</p></div>
-            <div class="weather"><span>☀</span><div><strong>${clock(state.minuteOfDay)}</strong><small>Sonnig · 22°C</small></div></div>
+            <div class="weather"><span>☀</span><div><strong data-live="clock">${clock(state.minuteOfDay)}</strong><small>Sonnig · 22°C</small></div></div>
           </div>
           <div class="parking-scene">
             <div class="city city-left"></div><div class="city city-right"></div>
@@ -83,7 +95,15 @@ const render = (): void => {
           <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
           <div class="metric"><div><span>Auslastung</span><strong>${Math.round(occupancy)}%</strong></div><div class="progress"><i style="width:${occupancy}%"></i></div><small>${state.occupied} von ${state.spaces} Plätzen belegt</small></div>
           <div class="quick-stats">
-            <div class="price-setting"><label for="hourly-price">PREIS / STD.</label><div><input id="hourly-price" name="hourly-price" type="number" min="0" step="0.10" value="${state.price.toFixed(2)}" aria-describedby="price-hint"><span>€</span></div><small id="price-hint">Frei wählbar · beeinflusst Nachfrage</small></div>
+            <div class="price-setting">
+              <span id="price-label">PREIS / STD.</span>
+              <div class="price-stepper" role="group" aria-labelledby="price-label">
+                <button type="button" data-price-step="-1" aria-label="Preis um ${money(PRICE_STEP)} senken" ${state.price <= 0 ? 'disabled' : ''}>−</button>
+                <strong aria-live="polite">${money(state.price)}</strong>
+                <button type="button" data-price-step="1" aria-label="Preis um ${money(PRICE_STEP)} erhöhen">+</button>
+              </div>
+              <small>Gewinn <b class="positive" data-live="rate">${profitPerSecond(state)}</b> / Sek.</small>
+            </div>
             <div><span>BEWERTUNG</span><strong>${state.reputation.toFixed(1)} <em>★</em></strong><small>${Math.max(4, state.carsServed + 14)} Rezensionen</small></div>
           </div>
           <div class="condition">
@@ -123,6 +143,8 @@ const render = (): void => {
     <footer><div class="brand mini"><span class="brand-mark">P</span><strong>Parking <em>Empire</em></strong></div><p>Dein Parkplatz. Deine Regeln. Dein Imperium.</p><span>SPIELSTAND AUTOMATISCH GESPEICHERT</span></footer>
     ${showOfflineModal ? `<div class="modal-backdrop" id="offline-modal"><div class="modal"><span class="modal-icon">☀</span><span class="eyebrow">WILLKOMMEN ZURÜCK</span><h2>Dein Parkplatz war fleißig.</h2><p>Während deiner Abwesenheit von ${Math.round(loaded.offlineMinutes)} Minuten wurden Einnahmen erzielt.</p><strong>+ ${money(loaded.offlineEarned)}</strong><button data-action="close-modal">Weiterbauen</button></div></div>` : ''}
   `;
+
+  if (restoreFocus) app.querySelector<HTMLElement>(restoreFocus)?.focus();
 };
 
 app.addEventListener('click', (event) => {
@@ -131,8 +153,10 @@ app.addEventListener('click', (event) => {
   if (target.matches('a')) event.preventDefault();
   const filter = target.dataset.filter as typeof selectedCategory | undefined;
   const upgrade = target.dataset.upgrade as UpgradeId | undefined;
+  const priceStep = target.dataset.priceStep;
   if (filter) selectedCategory = filter;
   if (upgrade) state = buyUpgrade(state, upgrade);
+  if (priceStep) state = adjustHourlyPrice(state, Number(priceStep));
   if (target.dataset.action === 'repair') state = repairIncident(state);
   if (target.dataset.action === 'maintenance') state = performMaintenance(state);
   if (target.dataset.action === 'mute') muted = !muted;
@@ -147,17 +171,47 @@ app.addEventListener('click', (event) => {
   if (target.dataset.action !== 'close-modal') render();
 });
 
-app.addEventListener('change', (event) => {
-  const input = (event.target as HTMLElement).closest<HTMLInputElement>('#hourly-price');
-  if (!input) return;
-  state = setHourlyPrice(state, input.valueAsNumber);
-  render();
-});
+/** Refreshes the values that grow continuously, without rebuilding the DOM. */
+const renderLiveValues = (): void => {
+  const cash = app.querySelector<HTMLElement>('[data-live="cash"]');
+  if (cash) cash.textContent = money(state.cash);
+  const clockNode = app.querySelector<HTMLElement>('[data-live="clock"]');
+  if (clockNode) clockNode.textContent = clock(state.minuteOfDay);
+  const rate = profitPerSecond(state);
+  app.querySelectorAll<HTMLElement>('[data-live="rate"]').forEach((node) => { node.textContent = rate; });
+};
+
+let lastStep = performance.now();
+let pendingTicks = 0;
+
+/** Books the elapsed real time; income accrues per frame, events once per second. */
+const step = (now = performance.now()): void => {
+  const elapsed = Math.min(2, Math.max(0, (now - lastStep) / 1000));
+  lastStep = now;
+  if (elapsed <= 0) return;
+
+  state = advanceTime(state, elapsed);
+  pendingTicks += elapsed;
+  let ticked = false;
+  while (pendingTicks >= 1) {
+    pendingTicks -= 1;
+    state = simulateTick(state);
+    ticked = true;
+  }
+
+  if (ticked) render();
+  else renderLiveValues();
+};
 
 render();
-setInterval(() => {
-  state = simulateTick(state);
-  render();
-}, 1000);
+
+// The animation frame keeps the counters smooth, the interval keeps the
+// simulation running while the tab is in the background.
+const frame = (now: number): void => {
+  step(now);
+  requestAnimationFrame(frame);
+};
+requestAnimationFrame(frame);
+setInterval(() => step(), 1000);
 setInterval(() => saveGame(state), 5000);
 window.addEventListener('beforeunload', () => saveGame(state));

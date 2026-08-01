@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  adjustHourlyPrice,
+  advanceTime,
   buyUpgrade,
   calculateOfflineProgress,
   incomePerMinute,
   incomePerSecond,
   INITIAL_STATE,
   maintenanceCost,
+  MINUTES_PER_SECOND,
   performMaintenance,
+  PRICE_STEP,
   repairIncident,
   setHourlyPrice,
   simulateTick,
@@ -19,10 +23,35 @@ const freshState = () => structuredClone(INITIAL_STATE);
 describe('parking simulation', () => {
   it('earns passive income and advances time', () => {
     const state = freshState();
-    const next = simulateTick(state, () => 1);
+    const next = advanceTime(state, 1);
     expect(next.cash).toBeGreaterThan(state.cash);
-    expect(next.minuteOfDay).toBe(state.minuteOfDay + 2);
+    expect(next.minuteOfDay).toBe(state.minuteOfDay + MINUTES_PER_SECOND);
     expect(next.occupied).toBe(state.occupied);
+  });
+
+  it('books revenue continuously for fractions of a second', () => {
+    const state = freshState();
+    const partial = advanceTime(state, 0.25);
+    expect(partial.cash).toBeGreaterThan(0);
+    expect(partial.cash).toBeCloseTo(incomePerSecond(state) * 0.25);
+    expect(partial.minuteOfDay).toBeCloseTo(state.minuteOfDay + 0.5);
+    expect(advanceTime(state, 0)).toBe(state);
+  });
+
+  it('accrues the same revenue in small slices as in one step', () => {
+    const state = freshState();
+    const single = advanceTime(state, 1);
+    let sliced = state;
+    for (let index = 0; index < 20; index += 1) sliced = advanceTime(sliced, 0.05);
+    expect(sliced.cash).toBeCloseTo(single.cash);
+    expect(sliced.lifetimeRevenue).toBeCloseTo(single.lifetimeRevenue);
+  });
+
+  it('leaves cash and clock untouched during an event tick', () => {
+    const state = freshState();
+    const next = simulateTick(state, () => 1);
+    expect(next.cash).toBe(state.cash);
+    expect(next.minuteOfDay).toBe(state.minuteOfDay);
   });
 
   it('starts with one occupied space and no capital', () => {
@@ -34,7 +63,7 @@ describe('parking simulation', () => {
   it('moves to the next day after midnight', () => {
     const state = freshState();
     state.minuteOfDay = 1439;
-    const next = simulateTick(state, () => 1);
+    const next = advanceTime(state, 1);
     expect(next.day).toBe(2);
     expect(next.minuteOfDay).toBe(1);
   });
@@ -66,11 +95,33 @@ describe('parking simulation', () => {
     expect(next.price).toBe(7.35);
     expect(next.cash).toBe(state.cash);
     expect(setHourlyPrice(state, -1)).toBe(state);
+    expect(setHourlyPrice(state, state.price)).toBe(state);
   });
 
-  it('reports the revenue earned by one real-time tick as profit per second', () => {
+  it('steps the price up and down and stops at zero', () => {
     const state = freshState();
-    expect(incomePerSecond(state)).toBeCloseTo(incomePerMinute(state) * 2);
+    const raised = adjustHourlyPrice(state, 1);
+    expect(raised.price).toBe(Math.round((state.price + PRICE_STEP) * 100) / 100);
+    expect(adjustHourlyPrice(raised, -1).price).toBe(state.price);
+
+    let lowered = state;
+    for (let index = 0; index < 100; index += 1) lowered = adjustHourlyPrice(lowered, -1);
+    expect(lowered.price).toBe(0);
+    expect(adjustHourlyPrice(lowered, -1)).toBe(lowered);
+  });
+
+  it('keeps a single chronicle entry while stepping the price', () => {
+    const state = freshState();
+    const stepped = adjustHourlyPrice(adjustHourlyPrice(adjustHourlyPrice(state, 1), 1), 1);
+    expect(stepped.log.filter((entry) => entry.startsWith('Der Stundenpreis'))).toHaveLength(1);
+    expect(stepped.log[0]).toContain('2,80');
+    expect(stepped.log).toHaveLength(state.log.length + 1);
+  });
+
+  it('reports the revenue earned by one real-time second as profit per second', () => {
+    const state = freshState();
+    expect(incomePerSecond(state)).toBeCloseTo(incomePerMinute(state) * MINUTES_PER_SECOND);
+    expect(advanceTime(state, 1).cash).toBeCloseTo(incomePerSecond(state));
   });
 
   it('does not mutate or upgrade an unaffordable state', () => {

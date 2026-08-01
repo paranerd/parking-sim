@@ -20,6 +20,7 @@ import {
   SPACES_PER_UPGRADE,
   paymentRate,
   paymentStage,
+  possibleEvents,
   possibleIncidents,
   performMaintenance,
   PRICE_STEP,
@@ -282,10 +283,10 @@ describe('upgrades', () => {
     expect(buyUpgrade(state, 'advertising')).toBe(state);
   });
 
-  it('rounds small costs to euros and large ones to tens', () => {
-    expect(upgradeCost(spaceUpgrade, 0)).toBe(10);
-    expect(upgradeCost(spaceUpgrade, 1)).toBe(11);
-    expect(upgradeCost(spaceUpgrade, 30) % 10).toBe(0);
+  it('rounds cheap steps finely and expensive ones coarsely', () => {
+    expect(upgradeCost(spaceUpgrade, 0)).toBe(2);
+    expect(upgradeCost(spaceUpgrade, 1)).toBeCloseTo(2.2, 6);
+    expect(upgradeCost(spaceUpgrade, 40) % 10).toBe(0);
   });
 });
 
@@ -400,6 +401,39 @@ describe('incidents only hit what exists', () => {
     expect(maintenanceCost(bigger)).toBe(Math.round(earningPower(bigger) / 60));
     // Never a fortune: well below an hour of what the lot takes in.
     expect(maintenanceCost(base)).toBeLessThan(earningPower(base));
+  });
+});
+
+describe('events', () => {
+  it('starts an event after the cooldown and lifts the demand while it lasts', () => {
+    const state = { ...freshState(), eventCooldown: 1 };
+    const started = simulateTick(state, () => 0);
+    expect(started.activeEvent).not.toBeNull();
+    expect(demand(started)).not.toBeCloseTo(demand(state), 6);
+    expect(started.activeEvent!.secondsLeft).toBeGreaterThan(60);
+  });
+
+  it('counts the event down and clears it when it is over', () => {
+    let state = { ...freshState(), eventCooldown: 1 };
+    state = simulateTick(state, () => 0);
+    const seconds = state.activeEvent!.secondsLeft;
+    for (let tick = 0; tick < seconds; tick += 1) state = simulateTick(state, () => 0.99);
+    expect(state.activeEvent).toBeNull();
+    expect(state.eventCooldown).toBeGreaterThan(0);
+    expect(demand(state)).toBeCloseTo(demand(freshState()), 6);
+  });
+
+  it('keeps location-bound events for their location', () => {
+    expect(possibleEvents(freshState())).not.toContain('holiday');
+    expect(possibleEvents(withLevel(freshState(), 'location', 2))).toContain('holiday');
+  });
+
+  it('keeps a running event over a reload and expires it over a long absence', () => {
+    const running = simulateTick({ ...freshState(), eventCooldown: 1 }, () => 0);
+    // Reloading the page must not swallow the event.
+    expect(simulateAway(running, 0).state.activeEvent).not.toBeNull();
+    expect(simulateAway(running, 0.5).state.activeEvent!.secondsLeft).toBeLessThan(running.activeEvent!.secondsLeft);
+    expect(simulateAway(running, 90).state.activeEvent).toBeNull();
   });
 });
 

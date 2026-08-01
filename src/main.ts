@@ -48,6 +48,7 @@ let muted = false;
 let showOfflineModal = Math.abs(loaded.offlineEarned) > 0.05;
 let askReset = false;
 let showProfitModal = false;
+let showDemandModal = false;
 
 const money = (value: number): string => `${value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 const signedMoney = (value: number): string => `${value < 0 ? '−' : '+'} ${money(Math.abs(value))}`;
@@ -84,32 +85,59 @@ const marketHint = (game: GameState): string => {
   return 'Angebot und Nachfrage sind im Gleichgewicht';
 };
 
-/** The full arithmetic behind the profit per second, with the current numbers. */
+/** Revenue, costs and what stays – one line per factor. */
 const profitModal = (game: GameState): string => {
   const revenue = revenuePerHour(game);
+  const costs = fixedCostPerHour(game);
   const profit = profitPerHour(game);
-  const items = fixedCostItems(game);
-  const priceFactor = attraction(game) > 0 ? demand(game) / attraction(game) : 1;
-  const wanted = demand(game);
   return `<div class="modal-backdrop" id="profit-modal">
     <div class="modal wide">
-      <span class="eyebrow">SO ENTSTEHT DEIN GEWINN</span>
+      <span class="eyebrow">BILANZ</span>
       <h2 class="${profit < 0 ? 'negative' : 'positive'}">${signedMoney(profitPerSecond(game))} pro Sekunde</h2>
       <table class="ledger">
-        <tr class="section"><th colspan="2">Einnahmen pro Stunde</th></tr>
-        <tr><td>Preis ${money(game.price)} × ${game.spaces} ${game.spaces === 1 ? 'Platz' : 'Plätze'} × Nachfrage ${percent(game.occupancy * 100)} × Zahlungsquote ${percent(paymentRate(game) * 100)}</td><td>${money(revenue)}</td></tr>
-        <tr class="section"><th colspan="2">Fixkosten pro Stunde</th></tr>
-        ${items.map((item) => `<tr><td>${item.label}</td><td class="cost">− ${money(item.amount)}</td></tr>`).join('')}
-        <tr class="total"><td>Gewinn pro Stunde</td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profit)}</td></tr>
+        <tr class="section"><th colspan="2">Umsatz</th></tr>
+        <tr><td>Preis pro Stunde</td><td>${money(game.price)}</td></tr>
+        <tr><td>Stellplätze</td><td>× ${game.spaces}</td></tr>
+        <tr><td>Nachfrage <em>(höchstens 100 %)</em></td><td>× ${percent(game.occupancy * 100)}</td></tr>
+        <tr><td>Zahlungsquote <em>(${paymentStage(game).name})</em></td><td>× ${percent(paymentRate(game) * 100)}</td></tr>
+        <tr class="sum"><td>Umsatz pro Stunde</td><td>${money(revenue)}</td></tr>
+        <tr class="section"><th colspan="2">Kosten</th></tr>
+        ${fixedCostItems(game).map((item) => `<tr><td>${item.label}</td><td>${money(item.amount)}</td></tr>`).join('')}
+        <tr class="sum"><td>Kosten pro Stunde</td><td>${money(costs)}</td></tr>
+        <tr class="section"><th colspan="2">Gewinn</th></tr>
+        <tr><td>${money(revenue)} Umsatz − ${money(costs)} Kosten</td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profit)}</td></tr>
         <tr class="total"><td>Gewinn pro Sekunde <em>(1 Sek. = ${MINUTES_PER_SECOND} Spielminuten)</em></td><td class="${profit < 0 ? 'negative' : ''}">${signedMoney(profitPerSecond(game))}</td></tr>
       </table>
-      <p class="note"><b>Woher die Nachfrage kommt:</b> Basis ${cars(currentLocation(game).baseDemand)} Autos (${currentLocation(game).name})
-        × Tageszeit ${percent(timeOfDayFactor(game.minuteOfDay) * 100)}
-        × Bewertung ${percent(reputationFactor(game) * 100)}
-        × Ausstattung ${percent(equipmentFactor(game) * 100)}
-        × Preis ${percent(priceFactor * 100)}
-        = <b>${cars(wanted)} Autos</b>. Auf ${game.spaces} ${game.spaces === 1 ? 'Platz' : 'Plätzen'} sind das ${percent(Math.min(100, wanted / game.spaces * 100))} Nachfrage – mehr als 100 % geht nicht, überzählige Gäste fahren weiter und bewerten schlechter.</p>
       <button data-action="close-profit">Verstanden</button>
+    </div>
+  </div>`;
+};
+
+/** Where the demand comes from – one line per factor, same ledger shape. */
+const demandModal = (game: GameState): string => {
+  const wanted = demand(game);
+  const priceFactor = attraction(game) > 0 ? wanted / attraction(game) : 1;
+  const share = wanted / Math.max(1, game.spaces) * 100;
+  const turnedAway = turnedAwayShare(game);
+  return `<div class="modal-backdrop" id="demand-modal">
+    <div class="modal wide">
+      <span class="eyebrow">NACHFRAGE</span>
+      <h2>${cars(wanted)} Autos suchen einen Platz</h2>
+      <table class="ledger">
+        <tr class="section"><th colspan="2">So viele Gäste kommen zusammen</th></tr>
+        <tr><td>Basis-Nachfrage <em>(${currentLocation(game).name})</em></td><td>${cars(currentLocation(game).baseDemand)} Autos</td></tr>
+        <tr><td>Tageszeit <em>(${clock(game.minuteOfDay)} Uhr)</em></td><td>× ${percent(timeOfDayFactor(game.minuteOfDay) * 100)}</td></tr>
+        <tr><td>Bewertung <em>(${game.reputation.toFixed(1)} ★)</em></td><td>× ${percent(reputationFactor(game) * 100)}</td></tr>
+        <tr><td>Werbung und Ausstattung</td><td>× ${percent(equipmentFactor(game) * 100)}</td></tr>
+        <tr><td>Preis <em>(${money(game.price)} zu ${money(willingnessToPay(game))} Zahlungsbereitschaft)</em></td><td>× ${percent(priceFactor * 100)}</td></tr>
+        <tr class="sum"><td>Autos, die parken wollen</td><td>${cars(wanted)}</td></tr>
+        <tr class="section"><th colspan="2">Auf ${game.spaces} ${game.spaces === 1 ? 'Stellplatz' : 'Stellplätzen'}</th></tr>
+        <tr class="total"><td>Nachfrage <em>(höchstens 100 %)</em></td><td>${percent(Math.min(100, share))}</td></tr>
+      </table>
+      <p class="note">${turnedAway > 0.02
+        ? `Rechnerisch sind es ${percent(share)} – die überzähligen ${percent(turnedAway * 100)} finden keinen Platz, fahren weiter und bewerten schlechter. Mehr verlangen oder ausbauen.`
+        : 'Ein höherer Preis senkt die Nachfrage, ein niedrigerer hebt sie – bis das Einzugsgebiet des Standorts erschöpft ist.'}</p>
+      <button data-action="close-demand">Verstanden</button>
     </div>
   </div>`;
 };
@@ -187,7 +215,7 @@ const render = (): void => {
         <aside class="side-panel">
           <div class="panel-title"><div><span class="eyebrow">BETRIEB</span><h2>Heute im Blick</h2></div><span class="day-pill">TAG ${state.day}</span></div>
           <div class="metric"><div><span>Auslastung</span><strong data-live="occupancy">${percent(occupancy)}</strong></div><div class="progress"><i data-live="occupancy-bar" style="width:${occupancy}%"></i></div><small><b data-live="capacity">${cars(state.occupancy * state.spaces)}</b> von ${state.spaces} ${state.spaces === 1 ? 'Platz' : 'Plätzen'} belegt</small></div>
-          <div class="metric"><div><span>Nachfrage</span><strong data-live="demand">${percent(demandShare)}</strong></div><div class="progress ${demandShare > 100 ? 'amber' : ''}"><i data-live="demand-bar" style="width:${Math.min(100, demandShare)}%"></i></div><small><b data-live="demand-cars">${cars(wanted)}</b> Autos suchen einen Platz</small></div>
+          <div class="metric"><div><span>Nachfrage <button class="info-button" data-action="explain-demand" aria-haspopup="dialog" aria-label="Wie entsteht die Nachfrage?">i</button></span><strong data-live="demand">${percent(demandShare)}</strong></div><div class="progress ${demandShare > 100 ? 'amber' : ''}"><i data-live="demand-bar" style="width:${Math.min(100, demandShare)}%"></i></div><small><b data-live="demand-cars">${cars(wanted)}</b> Autos suchen einen Platz</small></div>
           <div class="market-hint ${turnedAwayShare(state) > 0.02 ? 'tight' : ''}" data-live="market-hint">${marketHint(state)}</div>
           <div class="quick-stats">
             <div class="price-setting">
@@ -258,6 +286,7 @@ const render = (): void => {
       <button data-action="close-modal">Weiterbauen</button>
     </div></div>` : ''}
     ${showProfitModal ? profitModal(state) : ''}
+    ${showDemandModal ? demandModal(state) : ''}
     ${askReset ? `<div class="modal-backdrop" id="reset-modal"><div class="modal"><span class="modal-icon warn">↻</span><span class="eyebrow">NEU STARTEN</span><h2>Wirklich von vorn beginnen?</h2><p>Dein Spielstand von Tag ${state.day} mit ${state.spaces} ${state.spaces === 1 ? 'Stellplatz' : 'Stellplätzen'} und ${money(state.cash)} wird endgültig gelöscht.</p><div class="modal-actions"><button class="ghost" data-action="cancel-reset">Abbrechen</button><button data-action="confirm-reset">Ja, neu starten</button></div></div></div>` : ''}
   `;
 
@@ -283,6 +312,8 @@ app.addEventListener('click', (event) => {
   }
   if (target.dataset.action === 'explain-profit') showProfitModal = true;
   if (target.dataset.action === 'close-profit') showProfitModal = false;
+  if (target.dataset.action === 'explain-demand') showDemandModal = true;
+  if (target.dataset.action === 'close-demand') showDemandModal = false;
   if (target.dataset.action === 'ask-reset') askReset = true;
   if (target.dataset.action === 'cancel-reset') askReset = false;
   if (target.dataset.action === 'confirm-reset') restartGame();
@@ -297,6 +328,7 @@ const restartGame = (): void => {
   askReset = false;
   showOfflineModal = false;
   showProfitModal = false;
+  showDemandModal = false;
   lastStep = performance.now();
   pendingTicks = 0;
   saveGame(state);
